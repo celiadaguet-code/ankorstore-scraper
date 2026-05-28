@@ -1,0 +1,19 @@
+# Streamlit secrets (NE JAMAIS COMMITTER)
+.streamlit/secrets.toml
+secrets.toml
+
+# Google Cloud Service Account JSON (NE JAMAIS COMMITTER)
+gcp_service_account.json
+*service*account*.json
+*credentials*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# OS
+.DS_Store
+Thumbs.db

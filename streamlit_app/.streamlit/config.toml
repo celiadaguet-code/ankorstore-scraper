@@ -1,0 +1,31 @@
+# ============================================================================
+# Theme Ankorstore — palette officielle (Tonal + Energetic + Neutral)
+# ============================================================================
+# Charte : Tonal pour les surfaces, Energetic pour les accents.
+# La typo principale Ankorstore (GT Walsheim) est privée → on utilise Poppins
+# en backup (typo officielle secondaire d'Ankorstore, dispo Google Fonts).
+# ============================================================================
+
+[theme]
+# Couleur primaire (boutons CTA, accents) — Moss (Tonal palette)
+primaryColor = "#567570"
+
+# Fond principal — Warm white (Tonal/Neutral)
+backgroundColor = "#FBF8F3"
+
+# Fond secondaire (sidebar, expanders, cards) — Sand
+secondaryBackgroundColor = "#F3E0C6"
+
+# Texte principal — Black Ankorstore
+textColor = "#14060A"
+
+# Typo : "sans serif" → on override avec Poppins via CSS dans app.py
+font = "sans serif"
+
+[browser]
+gatherUsageStats = false
+
+[server]
+# Port par défaut local
+port = 8501
+headless = false

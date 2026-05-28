@@ -1,0 +1,10 @@
+# Streamlit web app
+streamlit>=1.30.0
+
+# Pour le scraper (scrap_ankorstore.py)
+openpyxl>=3.1.0
+
+# Pour la phase 2 (Google Sheets + Drive)
+gspread>=6.0.0
+google-auth>=2.20.0
+google-api-python-client>=2.100.0

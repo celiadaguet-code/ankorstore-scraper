@@ -1,0 +1,62 @@
+# ============================================================================
+# .gitignore racine du projet Ankorstore Catalog Scraper
+# ============================================================================
+
+# --- Secrets : NE JAMAIS COMMITTER ---
+.streamlit/secrets.toml
+secrets.toml
+*service*account*.json
+*credentials*.json
+gcp_service_account.json
+
+# --- Sorties de scraping (données locales) ---
+outputs/
+catalog_*.json
+catalog_*.txt
+*.summary.txt
+
+# --- Dumps de debug ---
+# Tous les .html à la racine sont des dumps de scraping → pas à versionner.
+# (Si un jour on a un vrai .html utile, il sera dans un sous-dossier.)
+/*.html
+debug_*.html
+debug_*/
+*_variant_dump.html
+*.com.html
+*.fr.html
+*.fr_*.html
+promolinge.com_*.html
+sumup_variant_dump.html
+wix_variant_dump.html
+probe_report.json
+sumup_*.html
+wix_*.html
+nayana-shop.sumupstore.com_*.html
+
+# --- Environnements Python ---
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.python-version
+
+# --- Caches divers ---
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- OS / éditeurs ---
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# --- Logs ---
+*.log
+
+# --- Streamlit-specific ---
+.streamlit/cache/
