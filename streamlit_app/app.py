@@ -489,6 +489,7 @@ if submitted:
     if not brand_url.strip():
         st.error("URL vide — colle une URL.")
     else:
+        normalized_url = brand_url.strip()
         if not normalized_url.startswith(("http://", "https://")):
             normalized_url = "https://" + normalized_url
         st.session_state.pending_url = normalized_url
