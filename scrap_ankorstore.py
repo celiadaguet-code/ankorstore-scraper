@@ -1144,52 +1144,93 @@ class PrestaShopScraper:
     def _crawl_single_category(self, category_url: str, max_pages: int = 50) -> list[str]:
         """Crawl une page catégorie (et ses pages de pagination) → liste produits.
 
-        Supporte la pagination PrestaShop : `?p=2`, `?p=3`, etc.
-        Stoppe quand une page ne ramène plus de nouveaux produits.
+        Supporte plusieurs formats de pagination PrestaShop :
+          - ?p=2, ?p=3 (PrestaShop standard)
+          - ?page=2 (autre format courant)
+          - /page-2/ (URL rewriting)
+        Pour chaque page on essaie les formats successivement si le premier ne
+        ramène aucun nouveau produit. Stoppe quand TOUS les formats échouent.
         """
         product_urls: list[str] = []  # ordered list (pas set) pour reproductibilité
         seen: set[str] = set()
         page = 1
+        # Format de pagination détecté pour ce site (None = pas encore détecté)
+        pagination_format: str | None = None
+
+        def _build_page_urls(cat_url: str, page_num: int) -> list[str]:
+            """Retourne les variantes d'URL de pagination à essayer."""
+            if page_num == 1:
+                return [cat_url]
+            sep = "&" if "?" in cat_url else "?"
+            return [
+                f"{cat_url}{sep}p={page_num}",
+                f"{cat_url}{sep}page={page_num}",
+                f"{cat_url.rstrip('/')}/page-{page_num}/",
+            ]
 
         while page <= max_pages:
-            if page == 1:
-                page_url = category_url
-            else:
+            # Liste des URLs candidates pour cette page
+            if pagination_format and page > 1:
+                # On a déjà détecté le bon format → on l'utilise
                 sep = "&" if "?" in category_url else "?"
-                page_url = f"{category_url}{sep}p={page}"
-
-            self.logger.info(f"  catégorie page {page}: {page_url}")
-            try:
-                status, hdrs, body = http_get_json(page_url, self.logger)
-            except HTTPError as e:
-                self.logger.warning(f"Catégorie page {page} échec : {e}")
-                break
-            if status != 200 or not isinstance(body, str):
-                self.logger.warning(f"Catégorie page {page} status={status}")
-                break
-
-            # Extrait les URLs produits du HTML
-            page_added = 0
-            for href in re.findall(r'href=["\']([^"\']+)["\']', body):
-                # Normalise en URL absolue (gère relatif simple : "foo.html",
-                # absolu chemin "/foo", protocol-relative "//cdn", URL complète)
-                if href.startswith("//"):
-                    href = f"https:{href}"
-                elif href.startswith(("http://", "https://")):
-                    pass
+                if pagination_format == "?p=":
+                    candidates = [f"{category_url}{sep}p={page}"]
+                elif pagination_format == "?page=":
+                    candidates = [f"{category_url}{sep}page={page}"]
+                elif pagination_format == "/page-":
+                    candidates = [f"{category_url.rstrip('/')}/page-{page}/"]
                 else:
-                    # Relatif (avec ou sans /) → résout via urljoin
-                    href = urljoin(page_url, href)
-                if self.domain not in href:
-                    continue
-                # Strip fragments / query (sauf si c'est la pagination)
-                href_clean = href.split("#")[0].split("?")[0]
-                if self._is_product_url(href_clean) and href_clean not in seen:
-                    seen.add(href_clean)
-                    product_urls.append(href_clean)
-                    page_added += 1
+                    candidates = _build_page_urls(category_url, page)
+            else:
+                candidates = _build_page_urls(category_url, page)
 
-            self.logger.info(f"    +{page_added} produits (total: {len(product_urls)})")
+            page_added = 0
+            page_url_used = None
+            for candidate in candidates:
+                self.logger.info(f"  catégorie page {page}: {candidate}")
+                try:
+                    status, hdrs, body = http_get_json(candidate, self.logger)
+                except HTTPError as e:
+                    self.logger.debug(f"Catégorie page {page} ({candidate}) échec : {e}")
+                    continue
+                if status != 200 or not isinstance(body, str):
+                    self.logger.debug(f"Catégorie page {page} status={status}")
+                    continue
+
+                # Extrait les URLs produits du HTML
+                attempt_added = 0
+                for href in re.findall(r'href=["\']([^"\']+)["\']', body):
+                    if href.startswith("//"):
+                        href = f"https:{href}"
+                    elif href.startswith(("http://", "https://")):
+                        pass
+                    else:
+                        href = urljoin(candidate, href)
+                    if self.domain not in href:
+                        continue
+                    href_clean = href.split("#")[0].split("?")[0]
+                    if self._is_product_url(href_clean) and href_clean not in seen:
+                        seen.add(href_clean)
+                        product_urls.append(href_clean)
+                        attempt_added += 1
+
+                if attempt_added > 0:
+                    page_added = attempt_added
+                    page_url_used = candidate
+                    # Mémorise le format de pagination pour les pages suivantes
+                    if page > 1 and pagination_format is None:
+                        if "?p=" in candidate and not candidate.endswith(f"?p={page-1}"):
+                            pagination_format = "?p="
+                        elif "?page=" in candidate:
+                            pagination_format = "?page="
+                        elif "/page-" in candidate:
+                            pagination_format = "/page-"
+                    break  # on a trouvé des produits sur ce format
+
+            self.logger.info(
+                f"    +{page_added} produits (total: {len(product_urls)})"
+                + (f" [via {page_url_used}]" if page_url_used and page > 1 else "")
+            )
             if page_added == 0:
                 # Plus de nouveaux produits → fin de pagination
                 break
@@ -1347,22 +1388,90 @@ class PrestaShopScraper:
             name = re.sub(r"<[^>]+>", " ", html.unescape(m.group(1)))
             name = re.sub(r"\s+", " ", name).strip()
 
-        # Prix depuis meta itemprop="price"
+        # Prix : on essaye plusieurs sources dans l'ordre de fiabilité
         price_amount = None
+
+        # Source 1 : meta itemprop="price" (microdata standard)
         m = re.search(r'<meta[^>]+itemprop="price"[^>]+content="([^"]+)"', html_text)
         if m:
             try:
                 price_amount = float(m.group(1))
             except ValueError:
                 pass
+
+        # Source 2 : data-product-price (attribut HTML PrestaShop)
         if price_amount is None:
-            # Fallback : data-product-price
             m = re.search(r'data-product-price="([^"]+)"', html_text)
             if m:
                 try:
                     price_amount = float(m.group(1))
                 except ValueError:
                     pass
+
+        # Source 3 : Open Graph product:price:amount
+        if price_amount is None:
+            m = re.search(
+                r'<meta[^>]+(?:property|name)=["\'](?:product:price:amount|og:price:amount)["\'][^>]+content=["\']([^"\']+)["\']',
+                html_text, flags=re.IGNORECASE,
+            )
+            if m:
+                try:
+                    price_amount = float(m.group(1).replace(",", "."))
+                except ValueError:
+                    pass
+
+        # Source 4 : JSON-LD Product avec offers
+        if price_amount is None:
+            for block in re.findall(
+                r'<script[^>]+type=["\']application/ld\+json["\'][^>]*>(.*?)</script>',
+                html_text, flags=re.DOTALL | re.IGNORECASE,
+            ):
+                try:
+                    ld_data = json.loads(block.strip())
+                except json.JSONDecodeError:
+                    continue
+                candidates = ld_data if isinstance(ld_data, list) else (
+                    ld_data.get("@graph", []) if isinstance(ld_data, dict) and "@graph" in ld_data
+                    else [ld_data]
+                )
+                for c in candidates:
+                    if not isinstance(c, dict):
+                        continue
+                    t = c.get("@type")
+                    if t == "Product" or (isinstance(t, list) and "Product" in t):
+                        offers = c.get("offers")
+                        if isinstance(offers, dict):
+                            try:
+                                price_amount = float(str(offers.get("price") or "").replace(",", "."))
+                                break
+                            except (ValueError, TypeError):
+                                pass
+                        elif isinstance(offers, list) and offers:
+                            try:
+                                price_amount = float(str(offers[0].get("price") or "").replace(",", "."))
+                                break
+                            except (ValueError, TypeError):
+                                pass
+                if price_amount is not None:
+                    break
+
+        # Source 5 : pattern HTML PrestaShop direct (span class="current-price" / "price")
+        if price_amount is None:
+            for pat in (
+                # PrestaShop 1.7+ : <span itemprop="price" content="29.00">29,00 €</span>
+                r'<span[^>]+itemprop="price"[^>]+content="([^"]+)"',
+                # PrestaShop 1.6 : <span class="current-price">...<span>29,00 €</span></span>
+                r'<span[^>]*class="[^"]*(?:current-price|product-price)[^"]*"[^>]*>(?:[^<]|<(?!/?span))*?([0-9]+[.,][0-9]{2})\s*(?:€|EUR)',
+                # Standard : tout span avec un prix au format "XX,YY €"
+                r'<span[^>]*>([0-9]+[.,][0-9]{2})\s*€</span>',
+            ):
+                m = re.search(pat, html_text, flags=re.IGNORECASE)
+                if m:
+                    try:
+                        price_amount = float(m.group(1).replace(",", "."))
+                        break
+                    except ValueError:
+                        pass
 
         # Description courte
         description_short = ""
