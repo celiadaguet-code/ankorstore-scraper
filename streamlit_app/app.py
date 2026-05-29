@@ -484,32 +484,53 @@ def _run_scrape(url: str) -> None:
     st.session_state.last_error = None
 
 
-# Si le formulaire vient d'être soumis avec une URL valide, lance le scrape
-if submitted and brand_url.strip():
-    url = brand_url.strip()
-    if not url.startswith(("http://", "https://")):
-        url = "https://" + url
+# 1) Si on vient de submit le form, on enregistre l'URL en pending state
+if submitted:
+    if not brand_url.strip():
+        st.error("URL vide — colle une URL.")
+    else:
+        if not normalized_url.startswith(("http://", "https://")):
+            normalized_url = "https://" + normalized_url
+        st.session_state.pending_url = normalized_url
+        # Reset les overrides précédents (si l'utilisateur change d'URL)
+        if st.session_state.get("force_url_override") != normalized_url:
+            st.session_state.pop("force_url_override", None)
+
+# 2) Traitement de l'URL pending (indépendant de `submitted`, donc survit aux reruns)
+if "pending_url" in st.session_state:
+    url = st.session_state.pending_url
 
     # Anti-duplication : check si déjà scrapée par l'équipe
     existing = find_existing_scrape(url)
-    if existing and not st.session_state.get("force_rescrape"):
+    force_override = st.session_state.get("force_url_override") == url
+
+    if existing and not force_override:
         when = existing.get("Date", "?")
         who = existing.get("AE", "?")
         link = existing.get("Lien xlsx", "")
         st.info(
-            f"💡 **{existing.get('Domaine', '?')}** a déjà été scrapée le **{when}** par **{who}**. "
+            f"💡 **{existing.get('Domaine', '?')}** a déjà été scrapée le "
+            f"**{when}** par **{who}**. "
             + (f"[Télécharger le xlsx existant]({link})" if link else "")
         )
-        if st.button("Scraper quand même (rafraîchir le catalogue)", type="secondary"):
-            st.session_state.force_rescrape = True
-            st.rerun()
+        col_a, col_b = st.columns(2)
+        with col_a:
+            if st.button("🚀 Scraper quand même (refresh)", type="primary",
+                         use_container_width=True, key="force_btn"):
+                st.session_state.force_url_override = url
+                st.rerun()
+        with col_b:
+            if st.button("❌ Annuler", type="secondary",
+                         use_container_width=True, key="cancel_btn"):
+                st.session_state.pop("pending_url", None)
+                st.session_state.pop("force_url_override", None)
+                st.rerun()
         st.stop()
     else:
-        # Reset le flag, et lance le scrape
-        st.session_state.force_rescrape = False
+        # On lance le scrape, puis on nettoie l'état pending
         _run_scrape(url)
-elif submitted and not brand_url.strip():
-    st.error("URL vide — colle une URL.")
+        st.session_state.pop("pending_url", None)
+        st.session_state.pop("force_url_override", None)
 
 
 # ----------------------------------------------------------------------------
