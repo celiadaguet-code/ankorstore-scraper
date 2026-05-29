@@ -4787,6 +4787,39 @@ def detect_cms(brand_url: str, logger: logging.Logger) -> str:
 # Plus simple et plus fiable que les autres CMS car JSON brut natif.
 # ============================================================================
 
+# Placeholders Shopify "Title / Default Title" en plusieurs langues.
+# Quand un produit Shopify n'a pas de vrais variants, Shopify ajoute une option
+# bidon qui se nomme différemment selon la langue du store.
+_SHOPIFY_DEFAULT_TITLE_VALUES = {
+    "default title",         # EN
+    "titre par défaut",      # FR
+    "titolo predefinito",    # IT
+    "título por defecto",    # ES
+    "standard-titel",        # DE
+    "standaard titel",       # NL
+    "título padrão",         # PT
+    "標題",                  # ZH (cas rare)
+    "デフォルト",             # JA
+}
+_SHOPIFY_TITLE_NAMES = {
+    "title",    # EN
+    "titre",    # FR
+    "titolo",   # IT
+    "título",   # ES, PT
+    "titel",    # DE, NL
+}
+
+
+def _is_shopify_default_title_option(name: str, values: list) -> bool:
+    """Détecte si une option Shopify est le placeholder 'Default Title' (multilingue)."""
+    if not values or len(values) != 1:
+        return False
+    name_lower = (name or "").strip().lower()
+    value_lower = str(values[0]).strip().lower()
+    # Si le nom est un nom de "titre" connu ET la valeur est un "default" connu
+    return name_lower in _SHOPIFY_TITLE_NAMES and value_lower in _SHOPIFY_DEFAULT_TITLE_VALUES
+
+
 class ShopifyScraper:
     """Scrape un site Shopify via l'endpoint public /products.json (paginé).
 
@@ -4883,6 +4916,9 @@ class ShopifyScraper:
     def _fetch_sitemap_product_urls(self) -> list[str]:
         """Récupère les URLs produits depuis /sitemap.xml (suit les sub-sitemaps
         contenant 'products' dans leur nom). Shopify expose tous les produits ici.
+
+        Filtre les versions multilingues (ex: /it/products/... /en/products/...)
+        pour ne garder que la locale dominante (= langue principale du site).
         """
         urls: list[str] = []
         sitemap_root = f"{self.base}/sitemap.xml"
@@ -4901,26 +4937,21 @@ class ShopifyScraper:
         product_subs = [u for u in sub_locs if "product" in u.lower()]
 
         if not product_subs:
-            # Pas de sub-sitemap → essaye d'extraire les URLs produits directement
             for u in sub_locs:
                 if "/products/" in u:
                     urls.append(u)
-            return urls
-
-        # Suit chaque sub-sitemap products
-        for sub_url in product_subs:
-            try:
-                s, _h, sub_body = http_get_json(sub_url, self.logger)
-            except Exception as e:
-                self.logger.debug(f"Sub-sitemap {sub_url} échoué : {e}")
-                continue
-            if s != 200 or not isinstance(sub_body, str):
-                continue
-            sub_urls = re.findall(r"<loc>([^<]+)</loc>", sub_body)
-            # On garde uniquement les URLs qui contiennent /products/ (pas les images)
-            sub_urls = [u for u in sub_urls if "/products/" in u and "/products/" == "/products/"]
-            sub_urls = [u for u in sub_urls if "/products/" in u]
-            urls.extend(sub_urls)
+        else:
+            for sub_url in product_subs:
+                try:
+                    s, _h, sub_body = http_get_json(sub_url, self.logger)
+                except Exception as e:
+                    self.logger.debug(f"Sub-sitemap {sub_url} échoué : {e}")
+                    continue
+                if s != 200 or not isinstance(sub_body, str):
+                    continue
+                sub_urls = re.findall(r"<loc>([^<]+)</loc>", sub_body)
+                sub_urls = [u for u in sub_urls if "/products/" in u]
+                urls.extend(sub_urls)
 
         # Dédoublonne en gardant l'ordre
         seen = set()
@@ -4929,8 +4960,62 @@ class ShopifyScraper:
             if u not in seen:
                 seen.add(u)
                 unique_urls.append(u)
+
+        # Filtre les versions multilingues : on détecte le préfixe de locale
+        # dominant et on ne garde que celui-là.
+        unique_urls = self._filter_dominant_locale(unique_urls)
         self.logger.info(f"Sitemap : {len(unique_urls)} URLs produits trouvées")
         return unique_urls
+
+    def _filter_dominant_locale(self, urls: list[str]) -> list[str]:
+        """Détecte le préfixe de locale dominant dans les URLs produits et garde
+        uniquement celui-ci. Évite les doublons FR/IT/EN/DE quand le site a un
+        sitemap multilingue.
+
+        Ex: si la majorité des URLs sont /products/X (sans préfixe), on filtre
+        les /it/products/X, /en/products/X, etc.
+        """
+        if len(urls) < 2:
+            return urls
+
+        # Pattern : capture le préfixe optionnel /xx ou /xx-xx avant /products/
+        pattern = re.compile(
+            r"^https?://[^/]+(?P<locale>(?:/[a-z]{2}(?:-[a-z]{2})?)?)/products/",
+            re.IGNORECASE,
+        )
+        from collections import Counter
+        locale_counts: Counter[str] = Counter()
+        matched_urls = []
+        for u in urls:
+            m = pattern.search(u)
+            if m:
+                locale = (m.group("locale") or "").lower()
+                locale_counts[locale] += 1
+                matched_urls.append((u, locale))
+
+        if not locale_counts or len(locale_counts) == 1:
+            return urls  # une seule locale (ou pas de pattern) → rien à filtrer
+
+        # On garde la locale la plus fréquente
+        main_locale, main_count = locale_counts.most_common(1)[0]
+        total = sum(locale_counts.values())
+        # On ne filtre que si la locale dominante représente >= 30% (sinon c'est
+        # peut-être un site multi-pays sans langue principale claire)
+        if main_count / total < 0.30:
+            return urls
+
+        filtered = [u for (u, loc) in matched_urls if loc == main_locale]
+        if main_locale:
+            self.logger.info(
+                f"Filtre multilingue : locale dominante='{main_locale}' "
+                f"({main_count}/{total} URLs), {len(filtered)} retenues"
+            )
+        else:
+            self.logger.info(
+                f"Filtre multilingue : locale dominante=racine (sans préfixe), "
+                f"{main_count}/{total} URLs, {len(filtered)} retenues"
+            )
+        return filtered
 
     def _fetch_via_sitemap(
         self,
@@ -5008,15 +5093,16 @@ class ShopifyScraper:
         first_price = str(first_variant.get("price") or "0")
         first_compare = first_variant.get("compare_at_price")
 
-        # Options Shopify (Color, Size, etc.). On filtre le "Title / Default Title"
-        # qui est le placeholder quand le produit n'a en réalité pas de variantes.
+        # Options Shopify (Color, Size, etc.). On filtre le placeholder "Default
+        # Title" Shopify (en plusieurs langues : EN, FR, IT, ES, DE, NL, PT) qui
+        # apparaît quand un produit n'a en réalité pas de variantes.
         options_raw = raw.get("options") or []
         attributes: list[dict] = []
         real_options = []  # indices 1-based des options "réelles" (pas Default Title)
         for i, opt in enumerate(options_raw, start=1):
             name = opt.get("name", "")
             values = opt.get("values") or []
-            if name == "Title" and values == ["Default Title"]:
+            if _is_shopify_default_title_option(name, values):
                 continue
             attributes.append({
                 "name": name,
