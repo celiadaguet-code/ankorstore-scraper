@@ -2023,14 +2023,50 @@ class PrestaShopScraper:
             status, hdrs, body = http_get_json(url, self.logger)
             if status != 200 or not isinstance(body, str):
                 return url, None, f"status={status}"
+            # Collecte aussi les fragments PrestaShop sur la page produit elle-même
+            # (liens type href="#/1-taille-3_12_mois" qui sont les boutons variantes)
+            self._scan_page_for_variant_fragments(url, body)
             product = self._extract_product_from_html(url, body)
             # Si pas de variations extraites du HTML, on tente de les reconstruire
-            # depuis les fragments URL collectés pendant le crawl (PrestaShop legacy)
+            # depuis les fragments URL collectés (pendant crawl + sur la page produit)
             if product is not None and not product.variations_data:
                 self._enrich_with_url_fragments(product, url)
             return url, product, ""
         except Exception as e:
             return url, None, f"{type(e).__name__}: {e}"
+
+    def _scan_page_for_variant_fragments(self, url: str, body: str) -> None:
+        """Cherche les fragments de variantes PrestaShop dans le HTML.
+
+        Pattern recherché : href="#/X-attr-value" ou href="...url#/X-attr-value"
+        où X est un ID d'attribut (ex: 1=taille). Ces liens sont les boutons de
+        variantes générés par PrestaShop pour les sélecteurs de combinaisons.
+        """
+        # Cas 1 : fragment seul (href="#/1-taille-3_12_mois")
+        for m in re.finditer(
+            r'href=["\']#(/\d+-[a-z][a-z0-9\-_/]*)["\']',
+            body, flags=re.IGNORECASE,
+        ):
+            frag = m.group(1)
+            self._url_fragments.setdefault(url, set()).add(frag)
+        # Cas 2 : href complet pointant vers cette page avec fragment
+        # href="...html#/1-taille-3_12_mois"
+        for m in re.finditer(
+            r'href=["\']([^"\']+\.html?)#(/\d+-[a-z][a-z0-9\-_/]*)["\']',
+            body, flags=re.IGNORECASE,
+        ):
+            href_part, frag = m.group(1), m.group(2)
+            # Normalise
+            if href_part.startswith(("http://", "https://")):
+                target = href_part
+            elif href_part.startswith("/"):
+                p = urlparse(url)
+                target = f"{p.scheme}://{p.netloc}{href_part}"
+            else:
+                target = urljoin(url, href_part)
+            # Si la cible est bien cette page produit, on rattache
+            if target.rstrip("/") == url.rstrip("/"):
+                self._url_fragments.setdefault(url, set()).add(frag)
 
     def _enrich_with_url_fragments(self, product: WooProduct, url: str) -> None:
         """Enrichit product.variations_data depuis self._url_fragments[url].
