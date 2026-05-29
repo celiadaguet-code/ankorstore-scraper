@@ -4740,8 +4740,10 @@ def detect_cms(brand_url: str, logger: logging.Logger) -> str:
         logger.info(f"CMS détecté : Wix ({', '.join(wix_signals)})")
         return "wix"
 
-    # Signatures PrestaShop
+    # Signatures PrestaShop (étendues pour reconnaître les PrestaShop modernes
+    # qui n'ont pas toujours `var prestashop=` ou le meta generator officiel)
     presta_signals = []
+    # Signatures explicites (PrestaShop standard)
     if re.search(r'\bvar\s+prestashop\s*=', body):
         presta_signals.append("var prestashop=")
     if re.search(r'window\.prestashop\b', body):
@@ -4755,6 +4757,27 @@ def detect_cms(brand_url: str, logger: logging.Logger) -> str:
                   body, flags=re.IGNORECASE)
     if m and "prestashop" in m.group(1).lower():
         presta_signals.append(f"meta generator: {m.group(1)}")
+
+    # Signatures secondaires (modules + structure URL typique PrestaShop)
+    # Modules PrestaShop : /modules/{name}/views/
+    if re.search(r'/modules/[a-z0-9_]+/views/', body):
+        presta_signals.append("/modules/...views/ (PrestaShop)")
+    # Modules natifs PrestaShop typiques
+    if any(m in body_lower for m in (
+        "myprestacomments", "ps_imageslider", "ps_categorytree",
+        "ps_facetedsearch", "blockcart", "psaddtocart",
+    )):
+        presta_signals.append("modules natifs PrestaShop")
+    # Pattern logo PrestaShop : /img/{slug}-logo-{timestamp}.{ext}
+    if re.search(r'/img/[a-z0-9][a-z0-9\-_]+-logo-\d{8,}\.(?:jpg|png|webp)', body):
+        presta_signals.append("logo PrestaShop pattern")
+    # Pattern URLs catégories : beaucoup de /{n}-{slug} dans les href
+    n_presta_urls = len(re.findall(
+        r'href=["\'][^"\']*/\d+-[a-z][a-z0-9\-_]*["\']',
+        body,
+    ))
+    if n_presta_urls >= 8:
+        presta_signals.append(f"{n_presta_urls} URLs format /{{N}}-slug (catégories PS)")
 
     # Signatures WooCommerce / WordPress
     woo_signals = []
