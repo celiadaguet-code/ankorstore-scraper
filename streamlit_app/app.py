@@ -31,20 +31,13 @@ ROOT_DIR = APP_DIR.parent
 if str(ROOT_DIR) not in sys.path:
     sys.path.insert(0, str(ROOT_DIR))
 
-# Import du scraper (~3000 lignes, déjà existant)
-# Note : son bootstrap venv au top du fichier ne fait rien si openpyxl
-# est déjà dispo (cas Streamlit avec openpyxl dans requirements.txt).
-try:
-    from scrap_ankorstore import process_brand, BrandReport
-except ImportError as e:
-    st.set_page_config(page_title="Erreur import", page_icon="❌")
-    st.error(f"Impossible d'importer scrap_ankorstore.py : {e}")
-    st.info(
-        "Vérifie que `scrap_ankorstore.py` est dans le dossier parent de `streamlit_app/`."
-    )
-    st.stop()
-
-# Import du module Sheets/Drive (optionnel, dégrade gracieusement)
+# NOTE : on n'importe PAS scrap_ankorstore ici (au top du fichier) pour éviter
+# de bouffer ~200MB de RAM au démarrage (regex pré-compilées + 3000 lignes).
+# Sur Streamlit Cloud Community (1 GB RAM), l'import au démarrage peut faire
+# crasher l'app avant même que le serveur web ne démarre. On l'importe paresseusement
+# dans _run_scrape() au moment du clic utilisateur.
+#
+# Import léger du module Sheets/Drive (juste quelques fonctions, pas de cache lourd).
 try:
     from sheets_drive import (
         is_gcp_configured,
@@ -374,6 +367,16 @@ if is_gcp_configured() and not submitted:
 # ----------------------------------------------------------------------------
 def _run_scrape(url: str) -> None:
     """Exécute le scrape et stocke le résultat en session_state."""
+    # Import paresseux : ne charge scrap_ankorstore qu'au 1er scrape (économie RAM)
+    try:
+        from scrap_ankorstore import process_brand, BrandReport
+    except ImportError as e:
+        st.session_state.last_error = (
+            f"Impossible d'importer scrap_ankorstore.py : {e}"
+        )
+        st.session_state.last_result = None
+        return
+
     output_dir = ROOT_DIR / "outputs"
     output_dir.mkdir(exist_ok=True)
 
@@ -385,7 +388,7 @@ def _run_scrape(url: str) -> None:
 
     try:
         with st.spinner("Détection CMS et récupération du catalogue..."):
-            report: BrandReport = process_brand(
+            report = process_brand(
                 url,
                 output_dir,
                 max_products=int(max_products) if max_products > 0 else None,
