@@ -1220,8 +1220,12 @@ class PrestaShopScraper:
         if status != 200 or not isinstance(body, str):
             return []
 
-        # Extrait toutes les URLs du body
+        # Extrait toutes les URLs du body (debug : log la taille et un échantillon)
         all_links = re.findall(r'href=["\']([^"\']+)["\']', body)
+        self.logger.info(
+            f"Home fetched : body={len(body)} chars, {len(all_links)} hrefs trouvés. "
+            f"Sample : {all_links[:5]}"
+        )
         for href in all_links:
             # Normalise en URL absolue
             if href.startswith("//"):
@@ -4269,15 +4273,43 @@ def stock_value(in_stock: bool, low_stock: int | None) -> int | str:
 MAX_IMAGES_PER_PRODUCT = 15  # cap dur (template Ankorstore limite à 15 colonnes images)
 
 
-def extract_image_urls(images: list[dict], limit: int = MAX_IMAGES_PER_PRODUCT) -> list[str]:
+def extract_image_urls(
+    images: list[dict],
+    limit: int = MAX_IMAGES_PER_PRODUCT,
+    base_url: str = "",
+) -> list[str]:
     """Extrait les URLs images. Applique l'upscaling pour atteindre une résolution
-    suffisante (Ankorstore exige min 500×500). Cap par défaut à 15 (max template)."""
+    suffisante (Ankorstore exige min 500×500). Cap par défaut à 15 (max template).
+
+    Normalise les URLs relatives en absolues si `base_url` est fourni (ex: WordPress
+    qui renvoie parfois /media/X au lieu de https://site/media/X).
+    """
     out: list[str] = []
+    # Calcule le scheme://host depuis base_url si fourni
+    base_scheme_host = ""
+    if base_url:
+        try:
+            p = urlparse(base_url)
+            if p.scheme and p.netloc:
+                base_scheme_host = f"{p.scheme}://{p.netloc}"
+        except Exception:
+            pass
+
     for img in images[:limit]:
         if isinstance(img, dict):
             src = img.get("src") or img.get("thumbnail") or ""
-            if src:
-                out.append(upscale_image_url(src))
+            if not src:
+                continue
+            # Normalisation URL relative → absolue
+            if base_scheme_host:
+                if src.startswith("//"):
+                    src = "https:" + src
+                elif src.startswith("/"):
+                    src = base_scheme_host + src
+                elif not src.startswith(("http://", "https://")):
+                    # Cas rare : URL relative sans slash de tête (ex: "media/img.jpg")
+                    src = base_scheme_host + "/" + src
+            out.append(upscale_image_url(src))
     return out
 
 
@@ -4314,7 +4346,8 @@ def build_rows_for_product(
     if len(cleaned_desc) < 30:
         logger.warning(f"#{p.id} '{p.name}': description nettoyée < 30 chars "
                        f"(len={len(cleaned_desc)}). Sera signalée comme à compléter.")
-    parent_images = extract_image_urls(p.images, limit=MAX_IMAGES_PER_PRODUCT)
+    parent_images = extract_image_urls(p.images, limit=MAX_IMAGES_PER_PRODUCT,
+                                       base_url=p.permalink)
     if not parent_images:
         logger.warning(f"#{p.id} '{p.name}': aucune image — Image 1 obligatoire manquante")
 
@@ -4376,7 +4409,8 @@ def build_rows_for_product(
             # Image variation : on ne remplit cette colonne QUE si la variation
             # a réellement sa propre image (différente de Image 1 du parent).
             # Si c'est juste une réplique de l'image parent, on laisse vide.
-            v_imgs = extract_image_urls(vd.get("images") or [], limit=1)
+            v_imgs = extract_image_urls(vd.get("images") or [], limit=1,
+                                        base_url=p.permalink)
             v_image_url = v_imgs[0] if v_imgs else ""
             if v_image_url and parent_images and v_image_url == parent_images[0]:
                 v_image_url = ""
