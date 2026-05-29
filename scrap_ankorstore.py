@@ -1023,6 +1023,9 @@ class PrestaShopScraper:
         self.lang_prefix = (
             f"/{path_parts[0]}" if path_parts and len(path_parts[0]) == 2 else ""
         )
+        # Fragments d'URL collectés pendant le crawl, pour reconstruire les variantes
+        # sur les PrestaShop legacy (URLs type produit.html#/1-taille-3_12_mois)
+        self._url_fragments: dict[str, set[str]] = {}
 
     # -- Sitemap ---------------------------------------------------------
 
@@ -1208,11 +1211,20 @@ class PrestaShopScraper:
                         href = urljoin(candidate, href)
                     if self.domain not in href:
                         continue
-                    href_clean = href.split("#")[0].split("?")[0]
-                    if self._is_product_url(href_clean) and href_clean not in seen:
-                        seen.add(href_clean)
-                        product_urls.append(href_clean)
-                        attempt_added += 1
+                    # Sépare l'URL et son fragment (pour collecter les variantes)
+                    href_no_query = href.split("?")[0]
+                    if "#" in href_no_query:
+                        url_part, frag = href_no_query.split("#", 1)
+                    else:
+                        url_part, frag = href_no_query, ""
+                    if self._is_product_url(url_part):
+                        if url_part not in seen:
+                            seen.add(url_part)
+                            product_urls.append(url_part)
+                            attempt_added += 1
+                        # Collecte le fragment (utile pour reconstruire les variantes)
+                        if frag:
+                            self._url_fragments.setdefault(url_part, set()).add(frag)
 
                 if attempt_added > 0:
                     page_added = attempt_added
@@ -1289,14 +1301,20 @@ class PrestaShopScraper:
                 href = urljoin(self.brand_url, href)
             if self.domain not in href:
                 continue
-            # Strip fragments / query strings pour dédoublonnage
-            href_clean = href.split("#")[0].split("?")[0]
-            if self._is_product_url(href_clean):
-                product_urls.add(href_clean)
+            # Sépare l'URL et son fragment (pour collecter les variantes)
+            href_no_query = href.split("?")[0]
+            if "#" in href_no_query:
+                url_part, frag = href_no_query.split("#", 1)
+            else:
+                url_part, frag = href_no_query, ""
+            if self._is_product_url(url_part):
+                product_urls.add(url_part)
+                # Collecte le fragment (utile pour reconstruire les variantes)
+                if frag:
+                    self._url_fragments.setdefault(url_part, set()).add(frag)
             # URL catégorie : on délègue à _is_category_url qui gère les 2 formats
-            # (id-slug et slug-id)
-            elif self._is_category_url(href_clean):
-                category_urls.add(href_clean)
+            elif self._is_category_url(url_part):
+                category_urls.add(url_part)
 
         self.logger.info(
             f"Crawl home : {len(product_urls)} produits directs, "
@@ -2006,9 +2024,63 @@ class PrestaShopScraper:
             if status != 200 or not isinstance(body, str):
                 return url, None, f"status={status}"
             product = self._extract_product_from_html(url, body)
+            # Si pas de variations extraites du HTML, on tente de les reconstruire
+            # depuis les fragments URL collectés pendant le crawl (PrestaShop legacy)
+            if product is not None and not product.variations_data:
+                self._enrich_with_url_fragments(product, url)
             return url, product, ""
         except Exception as e:
             return url, None, f"{type(e).__name__}: {e}"
+
+    def _enrich_with_url_fragments(self, product: WooProduct, url: str) -> None:
+        """Enrichit product.variations_data depuis self._url_fragments[url].
+
+        Les fragments PrestaShop ressemblent à :
+          - "/1-taille-3_12_mois" → 1 attribut Taille = "3/12 mois"
+          - "/1-taille-3_12_mois/2-couleur-bleu-marine" → 2 attributs combinés
+        """
+        fragments = self._url_fragments.get(url)
+        if not fragments:
+            return
+
+        parsed_variations: list[dict] = []
+        for i, frag in enumerate(sorted(fragments)):
+            # Parse "/X-attr_name-value/Y-attr2-value2/..."
+            parts = [p for p in frag.lstrip("/").split("/") if p]
+            attrs: list[dict] = []
+            sku_parts: list[str] = []
+            for part in parts:
+                # Format: {attr_id}-{attr_name}-{value}
+                # attr_name peut contenir des tirets, value aussi → on greedy match
+                m = re.match(r"^(\d+)-([a-z][a-z\-]*?)-(.+)$", part, re.IGNORECASE)
+                if not m:
+                    continue
+                attr_id, attr_name, attr_value = m.group(1), m.group(2), m.group(3)
+                # Normalise la valeur : remplace les séparateurs URL par des espaces
+                # ("3_12_mois" → "3 12 mois", "bleu-marine" → "bleu marine")
+                attr_value_clean = re.sub(r"[_\-]+", " ", attr_value).strip()
+                attr_name_clean = re.sub(r"[_\-]+", " ", attr_name).strip().capitalize()
+                attrs.append({"name": attr_name_clean, "value": attr_value_clean})
+                sku_parts.append(f"{attr_id}_{attr_value[:20]}")
+            if not attrs:
+                continue
+            var_id = (int(product.id) if product.id else 0) * 10000 + i + 1
+            parsed_variations.append({
+                "id": var_id,
+                "sku": f"{product.sku}-{'-'.join(sku_parts)}" if product.sku else "",
+                "prices": product.prices.copy() if product.prices else {},
+                "_parent_attributes": attrs,
+                "is_in_stock": product.is_in_stock,
+            })
+
+        if parsed_variations:
+            product.variations_data = parsed_variations
+            product.variations_ids = [v["id"] for v in parsed_variations]
+            product.type = "variable"
+            self.logger.debug(
+                f"[Presta] {url} : {len(parsed_variations)} variantes "
+                f"reconstruites depuis fragments URL"
+            )
 
     def build(self, max_products: int | None = None,
               concurrency: int = 2) -> list[WooProduct]:
