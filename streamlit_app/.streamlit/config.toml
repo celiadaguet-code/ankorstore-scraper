@@ -4,6 +4,10 @@
 # Charte : Tonal pour les surfaces, Energetic pour les accents.
 # La typo principale Ankorstore (GT Walsheim) est privée → on utilise Poppins
 # en backup (typo officielle secondaire d'Ankorstore, dispo Google Fonts).
+#
+# Note : on ne définit PAS [server] ici (port, headless, etc.) — Streamlit Cloud
+# impose ses propres valeurs et hardcoder le port=8501 cause un conflit.
+# Streamlit Cloud et le run local utilisent leurs defaults.
 # ============================================================================
 
 [theme]
@@ -24,8 +28,3 @@ font = "sans serif"
 
 [browser]
 gatherUsageStats = false
-
-[server]
-# Port par défaut local
-port = 8501
-headless = false
