@@ -1,46 +1,46 @@
 # Ankorstore Catalog Scraper
 
-> **Outil interne Ankorstore** — Scrape automatiquement le catalogue produits d'un site marque et génère un `.xlsx` prêt à importer dans Ankorstore.
+> **Internal Ankorstore tool** — Automatically scrapes a brand's product catalog and generates an `.xlsx` file ready to import into Ankorstore.
 
-🔗 **App en prod** : https://ankorstore-scraper.streamlit.app
-📊 **Historique d'équipe** : [Google Sheet](https://docs.google.com/spreadsheets/d/133RFUlvGqY34yE30j82QbKSYolKC0xuE22P4hjJM-ZY)
-
----
-
-## 🎯 Le problème résolu
-
-Quand un AE rencontre une marque prospect, importer son catalogue dans Ankorstore prend habituellement **2 à 3 heures à la main** (copier nom, prix, description, images, variants, etc. pour 50-500 produits).
-
-Cet outil fait le même travail en **30 secondes à 3 minutes** par marque, et génère un xlsx **directement importable** dans Ankorstore (1 ligne = 1 variante, champs obligatoires surlignés en jaune si manquants).
+🔗 **Production app**: https://ankorstore-scraper.streamlit.app
+📊 **Team history**: [Google Sheet](https://docs.google.com/spreadsheets/d/133RFUlvGqY34yE30j82QbKSYolKC0xuE22P4hjJM-ZY)
 
 ---
 
-## 🚀 Utilisation (pour les AE)
+## 🎯 The problem we're solving
 
-1. Aller sur **https://ankorstore-scraper.streamlit.app**
-2. Entrer le password partagé : `AnkorScrape2026!`
-3. Renseigner son prénom (mémorisé pour la session)
-4. Coller l'URL d'une marque prospect (ex : `https://cosmella.fr`)
-5. Cliquer **🚀 Scraper le catalogue**
-6. Attendre 30 secondes à 3 minutes selon la taille du catalogue
-7. **Télécharger le xlsx** → l'importer dans Ankorstore
+When an AE meets a prospect brand, importing their catalog into Ankorstore usually takes **2 to 3 hours of manual work** (copying name, price, description, images, variants, etc. for 50-500 products).
 
-L'app vérifie automatiquement si quelqu'un de l'équipe a déjà scrapé cette marque récemment (anti-duplication). Chaque scrape laisse une trace dans le Google Sheet partagé.
+This tool does the same job in **30 seconds to 3 minutes** per brand, and generates an xlsx file **ready to import** into Ankorstore (1 row = 1 variant, mandatory fields highlighted in yellow when missing).
 
 ---
 
-## 📊 CMS et plateformes supportés
+## 🚀 How to use it (for AEs)
 
-| Plateforme | Statut | Méthode |
+1. Go to **https://ankorstore-scraper.streamlit.app**
+2. Enter the shared password: `AnkorScrape2026!`
+3. Enter your first name (saved for the session)
+4. Paste the URL of a prospect brand (e.g. `https://cosmella.fr`)
+5. Click **🚀 Scrape catalog**
+6. Wait 30 seconds to 3 minutes depending on catalog size
+7. **Download the xlsx** → import it into Ankorstore
+
+The app automatically checks if a teammate has already scraped this brand recently (anti-duplication). Every scrape is logged in the shared Google Sheet.
+
+---
+
+## 📊 Supported CMS and platforms
+
+| Platform | Status | Method |
 |---|---|---|
-| **WooCommerce** | ✅ | Store API v1 + fallback sitemap HTML |
-| **PrestaShop** | ✅ | Attribut `data-product` JSON + fallback HTML legacy |
-| **Shopify** | ✅ | `/products.json` paginé + fallback sitemap pour stores restreints |
-| **Wix** | ✅ | `productItems` JSON + JSON-LD + upscale images |
-| **Squarespace** | ✅ | Trick `?format=json` + extraction variants |
+| **WooCommerce** | ✅ | Store API v1 + sitemap HTML fallback |
+| **PrestaShop** | ✅ | `data-product` JSON attribute + legacy HTML fallback |
+| **Shopify** | ✅ | Paginated `/products.json` + sitemap fallback for restricted stores |
+| **Wix** | ✅ | `productItems` JSON + JSON-LD + image upscaling |
+| **Squarespace** | ✅ | `?format=json` trick + variants extraction |
 | **SumUp Store** | ✅ | React Server Components flight data |
-| **Sites custom** | ⚠️ | Cascade JSON-LD → Open Graph → microdata (best-effort), fallback automatique si aucun CMS connu détecté |
-| **Etsy / Facebook Shop** | ❌ | Non viable (anti-scraping fort) |
+| **Custom sites** | ⚠️ | Cascade JSON-LD → Open Graph → microdata (best-effort), automatic fallback when no known CMS is detected |
+| **Etsy / Facebook Shop** | ❌ | Not viable (strong anti-scraping) |
 
 ---
 
@@ -48,132 +48,132 @@ L'app vérifie automatiquement si quelqu'un de l'équipe a déjà scrapé cette 
 
 ```
 ┌─────────────────────────────────────────────┐
-│  Streamlit Cloud Community (hébergement)    │
-│  - Auth password partagé                    │
-│  - UI Ankorstore (Moss + Poppins)           │
-│  - Session state (résultats persistés)      │
+│  Streamlit Cloud Community (hosting)        │
+│  - Shared password auth                     │
+│  - Ankorstore UI (Moss + Poppins)           │
+│  - Session state (persisted results)        │
 └─────────────────┬───────────────────────────┘
-                  │  (import paresseux pour limiter la RAM)
+                  │  (lazy import to limit RAM)
                   ▼
 ┌─────────────────────────────────────────────┐
-│  scrap_ankorstore.py  (~3300 lignes)        │
-│  - Détection CMS automatique                │
-│  - 7 scrapers spécialisés (Woo, Presta,     │
+│  scrap_ankorstore.py  (~3300 lines)         │
+│  - Automatic CMS detection                  │
+│  - 7 specialized scrapers (Woo, Presta,     │
 │    Shopify, Wix, Squarespace, SumUp,        │
 │    custom best-effort)                      │
-│  - Filtres anti-bruit (alcool, ateliers,    │
-│    cartes cadeaux, consultations…)          │
-│  - Mapping vers template xlsx Ankorstore    │
-│  - Highlight jaune des champs obligatoires  │
+│  - Noise filters (alcohol, workshops,       │
+│    gift cards, consultations…)              │
+│  - Maps to Ankorstore xlsx template         │
+│  - Yellow-highlights mandatory empty fields │
 └──┬──────────────────────┬───────────────────┘
    │                      │
    ▼                      ▼
 ┌──────────────┐    ┌──────────────────────┐
-│ Sites marques│    │ Google Workspace     │
-│ (scraping    │    │ - Sheet historique   │
-│  HTTP/HTML)  │    │ - Drive Partagé      │
-└──────────────┘    │   (archive xlsx)     │
+│ Brand sites  │    │ Google Workspace     │
+│ (HTTP/HTML   │    │ - History Sheet      │
+│  scraping)   │    │ - Shared Drive       │
+└──────────────┘    │   (xlsx archive)     │
                     └──────────────────────┘
 ```
 
 ---
 
-## 🛠️ Stack technique
+## 🛠️ Tech stack
 
-- **Python 3.11** (compatibilité Mac / Linux / Streamlit Cloud)
-- **Streamlit 1.58** (interface web — pas de framework JS à maintenir)
-- **openpyxl** (manipulation du template xlsx)
-- **gspread + google-api-python-client** (historique partagé)
-- **urllib + ThreadPoolExecutor** (scraping HTTP, sans dépendance type `requests`)
-- **Hébergement** : Streamlit Cloud Community (gratuit, plan 1 GB RAM)
-- **Repo** : GitHub privé (le code redevient public temporairement à chaque update pour permettre à Streamlit Cloud de re-pull)
+- **Python 3.11** (Mac / Linux / Streamlit Cloud compatible)
+- **Streamlit 1.58** (web UI — no JS framework to maintain)
+- **openpyxl** (xlsx template manipulation)
+- **gspread + google-api-python-client** (shared history)
+- **urllib + ThreadPoolExecutor** (HTTP scraping, no `requests`-style dependency)
+- **Hosting**: Streamlit Cloud Community (free, 1 GB RAM plan)
+- **Repo**: private GitHub (briefly made public for each update to allow Streamlit Cloud to re-pull)
 
 ---
 
-## 📁 Structure du projet
+## 📁 Project structure
 
 ```
 ankorstore-scraper/
-├── README.md                    # Ce fichier
-├── scrap_ankorstore.py          # Le scraper (~3300 lignes, 7 CMS dont Shopify)
-├── ankorstore_template.xlsx     # Template Ankorstore officiel
-├── probe_*.py                   # Scripts de diagnostic par CMS
-├── diag_*.py                    # Diagnostics ponctuels
+├── README.md                    # This file
+├── scrap_ankorstore.py          # The scraper (~3300 lines, 7 CMS incl. Shopify)
+├── ankorstore_template.xlsx     # Official Ankorstore template
+├── probe_*.py                   # Per-CMS diagnostic scripts
+├── diag_*.py                    # One-off diagnostics
 ├── streamlit_app/
-│   ├── app.py                   # UI Streamlit
-│   ├── sheets_drive.py          # Module Google Sheets + Drive
-│   ├── setup_secrets.py         # Wizard de configuration initiale
-│   ├── requirements.txt         # Dépendances Python
-│   ├── DEPLOY.md                # Guide de déploiement complet
-│   ├── run_local.command        # Lancement local (Mac)
-│   ├── run_local.bat            # Lancement local (Windows)
+│   ├── app.py                   # Streamlit UI
+│   ├── sheets_drive.py          # Google Sheets + Drive module
+│   ├── setup_secrets.py         # Initial config wizard
+│   ├── requirements.txt         # Python dependencies
+│   ├── DEPLOY.md                # Full deployment guide
+│   ├── run_local.command        # Local launcher (Mac)
+│   ├── run_local.bat            # Local launcher (Windows)
 │   └── .streamlit/
-│       ├── config.toml          # Thème Ankorstore (Moss + Poppins)
-│       └── secrets.toml.example # Template de config secrets
-└── .gitignore                   # Filtre secrets, venv, outputs, debug...
+│       ├── config.toml          # Ankorstore theme (Moss + Poppins)
+│       └── secrets.toml.example # Secrets config template
+└── .gitignore                   # Filters secrets, venv, outputs, debug…
 ```
 
 ---
 
-## 🔧 Installation locale (pour développeurs)
+## 🔧 Local install (for developers)
 
 ```bash
 git clone https://github.com/celiadaguet-code/ankorstore-scraper.git
 cd ankorstore-scraper/streamlit_app
-./run_local.command   # Mac (double-clic depuis Finder marche aussi)
-# OU
+./run_local.command   # Mac (double-clicking from Finder also works)
+# OR
 run_local.bat         # Windows
 ```
 
-Le script crée un venv Python local, installe les dépendances et lance Streamlit sur http://localhost:8501.
+The script creates a local Python venv, installs dependencies and launches Streamlit on http://localhost:8501.
 
-Pour la configuration des secrets (Google Sheet + Drive + password), voir [`streamlit_app/DEPLOY.md`](streamlit_app/DEPLOY.md).
-
----
-
-## 🔐 Sécurité
-
-- **Repo privé** sur GitHub (passé public uniquement le temps des déploiements)
-- **Authentification password** sur l'app (suffisant pour usage interne — le scraping cible des sites publics, aucune donnée client Ankorstore en jeu)
-- **Service Account Google** dédié, avec accès limité aux 2 ressources strictement nécessaires (1 Sheet + 1 dossier Drive)
-- **Secrets jamais commit** (`.gitignore` strict avec wildcards type `*service_account*.json`)
-- **Rotation clé GCP** : recommandée tous les 6-12 mois
+For secrets setup (Google Sheet + Drive + password), see [`streamlit_app/DEPLOY.md`](streamlit_app/DEPLOY.md).
 
 ---
 
-## 🐛 Quand un scrape ne marche pas bien
+## 🔐 Security
 
-L'app affiche systématiquement :
-- ⚠️ **Warnings** détaillés (descriptions trop courtes, champs manquants, etc.) avec le nom du produit concerné
-- 📋 **Produits exclus** par les filtres automatiques (ateliers, alcool, cartes cadeaux…) avec la raison
-- 🟡 **Cellules surlignées en jaune** dans le xlsx pour les champs obligatoires à compléter à la main
-
-Si une marque passe vraiment mal, **notifier Célia** avec l'URL de la marque concernée et un screenshot des warnings.
+- **Private GitHub repo** (only made public briefly during deployments)
+- **Password authentication** on the app (sufficient for internal use — scraping targets public sites, no Ankorstore customer data involved)
+- **Dedicated Google Service Account** with access limited to the 2 strictly required resources (1 Sheet + 1 Drive folder)
+- **Secrets never committed** (strict `.gitignore` with wildcards like `*service_account*.json`)
+- **GCP key rotation**: recommended every 6–12 months
 
 ---
 
-## 🛣️ Roadmap (idées d'évolution)
+## 🐛 When a scrape doesn't work well
 
-- [ ] Stats d'usage par AE (qui scrape combien, taux de conversion)
-- [ ] Détection des erreurs récurrentes (warnings communs entre marques)
-- [ ] Bouton "Pousser dans Ankorstore directement" (au lieu de télécharger le xlsx puis l'importer manuellement)
-- [ ] Webhook Slack pour notifier les nouveaux scrapes dans le canal
+The app always shows:
+- ⚠️ **Detailed warnings** (descriptions too short, missing fields, etc.) with the affected product name
+- 📋 **Products excluded** by automatic filters (workshops, alcohol, gift cards…) with the reason
+- 🟡 **Cells highlighted in yellow** in the xlsx for mandatory fields that need to be filled manually
+
+If a brand really doesn't scrape well, **notify Célia** with the brand URL and a screenshot of the warnings.
+
+---
+
+## 🛣️ Roadmap (future ideas)
+
+- [ ] Per-AE usage stats (who scrapes how much, conversion rate)
+- [ ] Detection of recurring errors (warnings common across brands)
+- [ ] "Push directly into Ankorstore" button (instead of downloading the xlsx and importing it manually)
+- [ ] Slack webhook to notify new scrapes in the channel
 
 ---
 
 ## 📞 Maintenance
 
-| Action | Procédure |
+| Action | Procedure |
 |---|---|
-| **Mettre à jour le code** | 1. Repasser le repo en public sur GitHub → 2. Push → 3. Streamlit Cloud redéploie auto (~2-3 min) → 4. Repasser en privé |
-| **Changer le password** | Streamlit Cloud → app → Settings → Secrets → modifier `app_password` → Save |
-| **Voir les logs de prod** | Streamlit Cloud → app → "Manage app" → panneau logs |
-| **Rotater la clé GCP** | GCP Console → IAM → Comptes de service → `scraper-bot` → Clés → Créer nouvelle + supprimer ancienne → relancer `setup_secrets.py` → MAJ Secrets Streamlit Cloud |
+| **Update the code** | 1. Make the repo public on GitHub → 2. Push → 3. Streamlit Cloud auto-redeploys (~2-3 min) → 4. Make it private again |
+| **Change the password** | Streamlit Cloud → app → Settings → Secrets → edit `app_password` → Save |
+| **View production logs** | Streamlit Cloud → app → "Manage app" → logs panel |
+| **Rotate the GCP key** | GCP Console → IAM → Service accounts → `scraper-bot` → Keys → Create new + delete old → re-run `setup_secrets.py` → Update Streamlit Cloud Secrets |
 
 ---
 
-## 👤 Auteur
+## 👤 Author
 
-**Célia Daguet** — Team Lead AE, Ankorstore (mai 2026)
+**Célia Daguet** — Team Lead AE, Ankorstore (May 2026)
 
-Projet construit avec assistance Claude (Anthropic) en 2 jours intensifs : du scraper Python jusqu'au déploiement web sécurisé pour l'équipe AE.
+Project built with Claude (Anthropic) assistance over 2 intense days: from Python scraper to secure web deployment for the AE team.
