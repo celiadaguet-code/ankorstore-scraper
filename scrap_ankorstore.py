@@ -4099,6 +4099,28 @@ def extract_inci(text: str) -> tuple[str, str]:
     return cleaned, inci_content
 
 
+# Labels de section couramment extraits à tort comme "description" (bug
+# typique des scrapers : on extrait le titre d'une section au lieu du contenu).
+# Si la description finale matche un de ces labels, on considère qu'elle est vide.
+_BOGUS_DESCRIPTION_LABELS = {
+    "description", "description du produit", "details", "détails",
+    "info", "infos", "informations", "more info", "plus d'informations",
+    "plus d'infos", "caractéristiques", "caracteristiques",
+    "details du produit", "détails du produit", "presentation",
+    "présentation", "fiche produit", "fiche technique",
+}
+
+
+def _is_just_section_label(s: str) -> bool:
+    """Retourne True si la chaîne est juste un label de section UI (pas du contenu)."""
+    if not s:
+        return False
+    # Normalise : lowercase + strip + retire diacritics + retire ponctuation finale
+    norm = _normalize(s.strip())
+    norm = re.sub(r"[\s:.,;!?]+$", "", norm)  # strip ponctuation et espaces finaux
+    return norm in _BOGUS_DESCRIPTION_LABELS
+
+
 def clean_description(short: str, full: str) -> str:
     """Construit la description Ankorstore en concaténant short + full nettoyés.
 
@@ -4106,9 +4128,17 @@ def clean_description(short: str, full: str) -> str:
       - Nettoie les deux indépendamment
       - Si l'un contient l'autre, on garde le plus long (évite la duplication)
       - Sinon on concatène : short (résumé) + \n\n + full (détails)
+      - Si après nettoyage la valeur est juste un label de section (genre
+        "Description", "Détails"...), on la considère vide.
     """
     cleaned_short = _clean_text(short)
     cleaned_full = _clean_text(full)
+
+    # Filtre les "fausses descriptions" qui sont juste des labels de section
+    if _is_just_section_label(cleaned_short):
+        cleaned_short = ""
+    if _is_just_section_label(cleaned_full):
+        cleaned_full = ""
 
     if not cleaned_short and not cleaned_full:
         return ""
