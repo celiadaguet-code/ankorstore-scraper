@@ -1086,25 +1086,38 @@ class PrestaShopScraper:
 
     @staticmethod
     def _is_product_url(url: str) -> bool:
-        """Heuristique : URL Presta de fiche produit."""
-        # /{cat}/{id}-{slug}.html
-        if re.search(r"/\d+(?:-\d+)?-[^/]+\.html?$", url):
+        """Heuristique : URL Presta de fiche produit. Supporte 2 formats :
+        - /{id}-{slug}.html  (id au début, format historique)
+        - /{slug}-{id}.html  (id à la fin, format ex: likoolis.fr)
+        """
+        path = urlparse(url).path
+        # Format historique : /{id}-{slug}.html ou /{id}-{n}-{slug}.html
+        if re.search(r"/\d+(?:-\d+)?-[^/]+\.html?$", path):
             return True
-        # /{cat}/{id}_{slug} (variant PS plus rare)
+        # Format alternatif : /{slug}-{id}.html avec id ≥ 3 chiffres (PrestaShop)
+        if re.search(r"/[a-z0-9][a-z0-9\-_]+-\d{3,}\.html?$", path, re.IGNORECASE):
+            return True
         return False
 
     @staticmethod
     def _is_category_url(url: str) -> bool:
-        """L'URL ressemble à une catégorie Presta (/{id}-{slug} sans .html)."""
+        """L'URL ressemble à une catégorie Presta. Supporte 2 formats :
+        - /{id}-{slug}      (id au début)
+        - /{slug}-{id}      (id à la fin, format ex: likoolis.fr)
+        """
         parsed = urlparse(url)
         path = parsed.path.rstrip("/")
         if not path:
             return False  # racine = home, pas catégorie
-        # Pattern catégorie : /{id_numerique}-{slug_letters}
-        # On exclut explicitement les URLs produits (qui finissent en .html)
         if path.endswith(".html") or path.endswith(".htm"):
             return False
-        return bool(re.search(r"/\d+(?:-\d+)?-[a-z0-9][a-z0-9\-_]+$", path, re.IGNORECASE))
+        # Format historique : /{id_numerique}-{slug_letters}
+        if re.search(r"/\d+(?:-\d+)?-[a-z0-9][a-z0-9\-_]+$", path, re.IGNORECASE):
+            return True
+        # Format alternatif : /{slug_letters}-{id_numerique} (id ≥ 3 chiffres)
+        if re.search(r"/[a-z][a-z0-9\-_]+-\d{3,}$", path, re.IGNORECASE):
+            return True
+        return False
 
     def _get_product_urls(self) -> list[str]:
         # MODE 1 — URL catégorie : on scope sur cette catégorie uniquement
@@ -1223,13 +1236,9 @@ class PrestaShopScraper:
             href_clean = href.split("#")[0].split("?")[0]
             if self._is_product_url(href_clean):
                 product_urls.add(href_clean)
-            # URL catégorie typique : /{n}-{slug} ou /{slug} sans .html
-            elif (
-                re.search(r"/\d+-[a-z0-9\-_]+/?$", href_clean)
-                and not href_clean.endswith(".html")
-                and "/category/" not in href_clean
-                and "?" not in href_clean
-            ):
+            # URL catégorie : on délègue à _is_category_url qui gère les 2 formats
+            # (id-slug et slug-id)
+            elif self._is_category_url(href_clean):
                 category_urls.add(href_clean)
 
         self.logger.info(
