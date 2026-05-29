@@ -4665,6 +4665,20 @@ def detect_cms(brand_url: str, logger: logging.Logger) -> str:
 
     body_lower = body.lower()
 
+    # Signatures Shopify (très spécifiques — meta tag et CDN dédiés)
+    shopify_signals = []
+    if "cdn.shopify.com" in body_lower:
+        shopify_signals.append("cdn.shopify.com")
+    if "myshopify.com" in body_lower:
+        shopify_signals.append("myshopify.com")
+    if "shopify-checkout-api-token" in body_lower:
+        shopify_signals.append("meta shopify-checkout-api-token")
+    if "shopify-section" in body_lower or "shopify-features" in body_lower:
+        shopify_signals.append("shopify-section/features")
+    if shopify_signals:
+        logger.info(f"CMS détecté : Shopify ({', '.join(shopify_signals)})")
+        return "shopify"
+
     # Signatures SumUp Store (très spécifiques)
     sumup_signals = []
     if "sumupstore.com" in body_lower:
@@ -4765,6 +4779,204 @@ def detect_cms(brand_url: str, logger: logging.Logger) -> str:
     return "unknown"
 
 
+# ============================================================================
+# SECTION — Scraper Shopify
+# ============================================================================
+# Shopify expose un endpoint REST public sur tous ses sites :
+#     GET /products.json?page=N&limit=250
+# Plus simple et plus fiable que les autres CMS car JSON brut natif.
+# ============================================================================
+
+class ShopifyScraper:
+    """Scrape un site Shopify via l'endpoint public /products.json (paginé).
+
+    Avantage par rapport aux autres CMS : pas de parsing HTML, l'API publique
+    expose tous les produits, variantes, prix, images et options en JSON.
+    """
+
+    def __init__(self, brand_url: str, logger: logging.Logger):
+        self.brand_url = brand_url
+        p = urlparse(brand_url if "://" in brand_url else f"https://{brand_url}")
+        self.base = f"{p.scheme}://{p.netloc}"
+        self.domain = p.netloc.replace("www.", "")
+        self.logger = logger
+
+    def build(
+        self, max_products: int | None = None, concurrency: int = 2,
+    ) -> list[WooProduct]:
+        """Pagine /products.json en récupérant 250 produits par page."""
+        per_page = 250
+        page = 1
+        all_raw: list[dict] = []
+        while True:
+            url = f"{self.base}/products.json?limit={per_page}&page={page}"
+            self.logger.info(f"GET {url}")
+            try:
+                status, _hdrs, data = http_get_json(url, self.logger)
+            except Exception as e:
+                self.logger.error(f"Erreur fetch page {page} : {e}")
+                break
+            if status != 200 or not isinstance(data, dict):
+                self.logger.warning(
+                    f"page {page} a renvoyé status={status} (data type {type(data).__name__}), "
+                    f"fin de pagination"
+                )
+                break
+            products_page = data.get("products") or []
+            if not products_page:
+                self.logger.info(f"page {page} vide → fin de pagination")
+                break
+            all_raw.extend(products_page)
+            self.logger.info(
+                f"  -> +{len(products_page)} produits (cumulé : {len(all_raw)})"
+            )
+            if len(products_page) < per_page:
+                break
+            page += 1
+            time.sleep(CRAWL_DELAY)
+            if max_products and len(all_raw) >= max_products:
+                self.logger.info(f"Limite max_products={max_products} atteinte")
+                break
+
+        if max_products:
+            all_raw = all_raw[:max_products]
+
+        # Convertit chaque produit Shopify en WooProduct (format intermédiaire commun)
+        products: list[WooProduct] = []
+        for raw in all_raw:
+            try:
+                products.append(self._to_woo_product(raw))
+            except Exception as e:
+                self.logger.error(
+                    f"Conversion produit Shopify #{raw.get('id', '?')} "
+                    f"'{raw.get('title', '?')}' échouée : {e}"
+                )
+        return products
+
+    def _to_woo_product(self, raw: dict) -> WooProduct:
+        """Convertit un produit Shopify JSON en WooProduct (schéma intermédiaire)."""
+        pid = int(raw.get("id") or 0)
+        title = (raw.get("title") or "").strip()
+        handle = raw.get("handle") or ""
+        body_html = raw.get("body_html") or ""
+        product_type = (raw.get("product_type") or "").strip()
+        tags_str = raw.get("tags") or ""
+        tags_list = [t.strip() for t in tags_str.split(",") if t.strip()]
+
+        # Variants Shopify
+        variants_raw = raw.get("variants") or []
+        first_variant = variants_raw[0] if variants_raw else {}
+        first_sku = first_variant.get("sku") or ""
+        first_price = str(first_variant.get("price") or "0")
+        first_compare = first_variant.get("compare_at_price")
+
+        # Options Shopify (Color, Size, etc.). On filtre le "Title / Default Title"
+        # qui est le placeholder quand le produit n'a en réalité pas de variantes.
+        options_raw = raw.get("options") or []
+        attributes: list[dict] = []
+        real_options = []  # indices 1-based des options "réelles" (pas Default Title)
+        for i, opt in enumerate(options_raw, start=1):
+            name = opt.get("name", "")
+            values = opt.get("values") or []
+            if name == "Title" and values == ["Default Title"]:
+                continue
+            attributes.append({
+                "name": name,
+                "options": values,
+                "terms": [{"name": v} for v in values],
+            })
+            real_options.append((i, name))
+
+        # Type : "variable" si ≥2 variants OU options réelles présentes
+        is_variable = len(variants_raw) > 1 or len(real_options) > 0
+        ptype = "variable" if is_variable else "simple"
+
+        # Variations détaillées au format Woo
+        # IMPORTANT : on respecte le format exact que `build_rows_for_product` attend :
+        #   - "_parent_attributes" (pas "attributes") pour Color/Size/etc
+        #   - "images" (liste, pas "image") pour l'image spécifique du variant
+        # Cents_to_decimal gère les prix décimal Shopify "19.99" via fallback float()
+        variations_data: list[dict] = []
+        for v in variants_raw:
+            v_attrs = []
+            for idx, opt_name in real_options:
+                val = v.get(f"option{idx}")
+                if val:
+                    v_attrs.append({"name": opt_name, "value": val})
+            # Image du variant (si Shopify a défini une image spécifique pour ce variant)
+            v_images_list = []
+            feat_img = v.get("featured_image")
+            if isinstance(feat_img, dict) and feat_img.get("src"):
+                v_images_list.append({
+                    "src": feat_img["src"],
+                    "alt": feat_img.get("alt") or "",
+                })
+            v_data = {
+                "id": int(v.get("id") or 0),
+                "sku": v.get("sku") or "",
+                "prices": {
+                    "price": str(v.get("price") or "0"),
+                    "regular_price": str(v.get("compare_at_price") or v.get("price") or "0"),
+                    "currency_minor_unit": 2,
+                    "currency_code": "EUR",  # default, Shopify n'expose pas la devise dans /products.json
+                },
+                # Attribut clé attendu par build_rows_for_product
+                "_parent_attributes": v_attrs,
+                # Image variant (liste pour cohérence avec extract_image_urls)
+                "images": v_images_list,
+                "is_in_stock": bool(v.get("available", True)),
+            }
+            variations_data.append(v_data)
+
+        # Images du produit
+        images_raw = raw.get("images") or []
+        images = [
+            {"src": img.get("src", ""), "alt": img.get("alt") or title}
+            for img in images_raw if img.get("src")
+        ]
+
+        # Categories : Shopify utilise un seul product_type
+        categories: list[dict] = []
+        if product_type:
+            categories.append({
+                "name": product_type,
+                "slug": product_type.lower().replace(" ", "-"),
+            })
+
+        # Tags
+        tags_field = [{"name": t} for t in tags_list]
+
+        # Stock global
+        is_in_stock = any(v.get("available") for v in variants_raw)
+
+        return WooProduct(
+            id=pid,
+            name=title,
+            slug=handle,
+            type=ptype,
+            sku=first_sku,
+            short_description="",  # Shopify n'a pas de short separé du body
+            description=body_html,
+            permalink=f"{self.base}/products/{handle}",
+            prices={
+                "price": first_price,
+                "regular_price": str(first_compare or first_price),
+                "currency_minor_unit": 2,
+                "currency_code": "EUR",
+            },
+            images=images,
+            categories=categories,
+            tags=tags_field,
+            attributes=attributes,
+            variations_ids=[int(v.get("id") or 0) for v in variants_raw],
+            variations_data=variations_data,
+            is_in_stock=is_in_stock,
+            low_stock_remaining=None,
+            raw=raw,
+            features=[],  # Shopify n'a pas de "features" structurées comme Presta
+        )
+
+
 def slugify_domain(brand_url: str) -> str:
     p = urlparse(brand_url if "://" in brand_url else f"https://{brand_url}")
     s = p.netloc.replace("www.", "")
@@ -4794,7 +5006,23 @@ def process_brand(
     max_products: int | None = None,
     cms: str = "auto",
     concurrency: int = 2,
+    progress_callback=None,
 ) -> BrandReport:
+    """Scrape une marque et génère le xlsx Ankorstore.
+
+    Args:
+        progress_callback: fonction optionnelle (pct: float, message: str) -> None.
+            Appelée aux étapes clés (0.0 à 1.0). Utilisée par l'UI Streamlit pour
+            afficher une barre de progression.
+    """
+    def _progress(pct: float, msg: str) -> None:
+        """Helper sûr : appelle le callback s'il existe, ignore les erreurs UI."""
+        if progress_callback is not None:
+            try:
+                progress_callback(max(0.0, min(1.0, pct)), msg)
+            except Exception:
+                pass
+
     domain_slug = slugify_domain(brand_url)
     brand_dir = output_dir / domain_slug
     brand_dir.mkdir(parents=True, exist_ok=True)
@@ -4802,17 +5030,24 @@ def process_brand(
     started = datetime.now()
     t0 = time.time()
     logger.info(f"=== {brand_url} (CMS: {cms}) ===")
+    _progress(0.02, "Démarrage…")
 
     try:
         # Auto-détection du CMS si demandée
         if cms == "auto":
+            _progress(0.05, "Détection du CMS…")
             detected = detect_cms(brand_url, logger)
             if detected == "unknown":
-                raise ValueError(
-                    f"CMS non détecté pour {brand_url}. "
-                    f"Précise manuellement avec --cms woocommerce ou --cms prestashop."
+                # Aucun CMS connu détecté → fallback automatique vers le scraper
+                # 'custom' (best-effort JSON-LD / Open Graph / microdata).
+                logger.info(
+                    "Aucun CMS connu détecté → fallback automatique vers 'custom' "
+                    "(scraping best-effort via JSON-LD / OG meta / microdata)."
                 )
-            cms = detected
+                cms = "custom"
+            else:
+                cms = detected
+        _progress(0.10, f"CMS : {cms} — récupération du catalogue…")
 
         # 1. Scrape — dispatch sur le bon scraper selon le CMS
         if cms == "prestashop":
@@ -4821,6 +5056,9 @@ def process_brand(
         elif cms == "woocommerce":
             scraper = WooScraper(brand_url, logger)
             products = scraper.build(max_products=max_products)
+        elif cms == "shopify":
+            scraper = ShopifyScraper(brand_url, logger)
+            products = scraper.build(max_products=max_products, concurrency=concurrency)
         elif cms == "wix":
             scraper = WixScraper(brand_url, logger)
             products = scraper.build(max_products=max_products, concurrency=concurrency)
@@ -4836,9 +5074,11 @@ def process_brand(
         else:
             raise ValueError(
                 f"CMS non supporté : {cms} "
-                f"(attendu: woocommerce, prestashop, wix, squarespace, sumup, custom, auto)"
+                f"(attendu: woocommerce, prestashop, shopify, wix, squarespace, "
+                f"sumup, custom, auto)"
             )
         logger.info(f"Récupéré {len(products)} produits (avant filtre)")
+        _progress(0.70, f"{len(products)} produits récupérés, nettoyage…")
 
         # 1bis. Normalisation des noms : strip d'un éventuel suffixe site commun
         _strip_common_brand_suffix(products, logger)
@@ -4859,12 +5099,13 @@ def process_brand(
                 kept.append(p)
         logger.info(f"Filtre non-marchandises : {len(filtered_out)} exclus, "
                     f"{len(kept)} retenus")
+        _progress(0.80, f"{len(kept)} produits à mapper vers le template…")
 
-        # 3. Mapping
+        # 3. Mapping — on compte séparément les warnings (info) et les vrais
+        # échecs de mapping (= produits qu'on n'a pas pu transformer en lignes).
         all_rows: list[AnkorRow] = []
-        warning_count = 0
-        prev_handler_count = len(logger.handlers)
-        # On compte les warnings via un compteur custom
+        mapping_failures = 0  # produits dont le build_rows_for_product a raise
+        # On compte aussi les warnings (descriptions courtes, etc.) à titre indicatif
         class WarnCounter(logging.Handler):
             def __init__(self): super().__init__(); self.n = 0
             def emit(self, record):
@@ -4872,20 +5113,38 @@ def process_brand(
                     self.n += 1
         wc = WarnCounter()
         logger.addHandler(wc)
-        for p in kept:
+        n_kept = max(1, len(kept))  # éviter division par 0
+        for i, p in enumerate(kept):
             try:
                 rows = build_rows_for_product(p, logger)
                 all_rows.extend(rows)
             except Exception as e:
                 logger.error(f"#{p.id} '{p.name}' : mapping échoué : {e}")
+                mapping_failures += 1
+            # Progress bar : 80% → 95% pendant le mapping
+            _progress(0.80 + 0.15 * (i + 1) / n_kept,
+                      f"Mapping produit {i + 1}/{n_kept}…")
         warning_count = wc.n
 
         # 4. Écriture xlsx
+        _progress(0.95, "Génération du fichier xlsx…")
         output_file = brand_dir / f"{domain_slug}_ankorstore.xlsx"
         write_xlsx(all_rows, output_file, logger)
+        _progress(1.0, "Terminé !")
 
         duration = time.time() - t0
         logger.info(f"Terminé en {duration:.1f}s")
+
+        # Détermination du status :
+        # - 'failed'  : aucun produit récupéré OU aucune ligne générée (scrape KO)
+        # - 'partial' : certains produits ont échoué leur mapping (mais pas tous)
+        # - 'success' : tous les produits gardés ont été mappés (warnings indicatifs OK)
+        if len(all_rows) == 0 or len(kept) == 0:
+            final_status = "failed"
+        elif mapping_failures > 0:
+            final_status = "partial"
+        else:
+            final_status = "success"
 
         return BrandReport(
             brand_url=brand_url,
@@ -4897,7 +5156,7 @@ def process_brand(
             n_variants_total=len(all_rows),
             n_warnings=warning_count,
             output_file=str(output_file),
-            status="success" if warning_count == 0 else "partial",
+            status=final_status,
             filtered_out_items=[(p.name, reason) for p, reason in filtered_out],
         )
     except Exception as e:
@@ -4952,8 +5211,8 @@ def main() -> int:
     )
     parser.add_argument("urls", nargs="+", help="URLs des marques à scraper")
     parser.add_argument("--cms",
-                        choices=["auto", "woocommerce", "prestashop", "wix",
-                                 "squarespace", "sumup", "custom"],
+                        choices=["auto", "woocommerce", "prestashop", "shopify",
+                                 "wix", "squarespace", "sumup", "custom"],
                         default="auto",
                         help="CMS source (défaut: auto). Force avec un nom explicite "
                              "si la détection se trompe. Use 'custom' pour sites "

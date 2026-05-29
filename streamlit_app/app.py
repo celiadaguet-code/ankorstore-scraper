@@ -272,7 +272,8 @@ with st.sidebar:
     st.subheader("⚙️ Paramètres avancés")
     cms_choice = st.selectbox(
         "CMS",
-        ["auto", "woocommerce", "prestashop", "wix", "squarespace", "sumup", "custom"],
+        ["auto", "woocommerce", "prestashop", "shopify", "wix", "squarespace",
+         "sumup", "custom"],
         index=0,
         help="Auto-détection par défaut. Force un CMS si la détection se trompe.",
     )
@@ -311,7 +312,8 @@ st.title("📦 Scrapeur catalogue → Ankorstore")
 st.caption(
     "Colle l'URL d'un site marque, l'outil scrape le catalogue et génère "
     "un .xlsx prêt à importer dans Ankorstore. "
-    "CMS supportés : WooCommerce, PrestaShop, Wix, Squarespace, SumUp Store, sites custom."
+    "CMS supportés : WooCommerce, PrestaShop, Shopify, Wix, Squarespace, "
+    "SumUp Store, sites custom."
 )
 
 if not ae_name:
@@ -382,25 +384,36 @@ def _run_scrape(url: str) -> None:
 
     status_box = st.empty()
     status_box.info(
-        f"🕐 Scraping de **{url}** en cours... "
+        f"🕐 Scraping de **{url}** en cours… "
         "(peut prendre 30s à 3min selon la marque)"
     )
 
+    # Progress bar avec % d'avancement réel (driven par le scraper)
+    progress_bar = st.progress(0.0, text="Initialisation…")
+
+    def _update_progress(pct: float, msg: str) -> None:
+        try:
+            progress_bar.progress(pct, text=f"{int(pct * 100)}% — {msg}")
+        except Exception:
+            pass
+
     try:
-        with st.spinner("Détection CMS et récupération du catalogue..."):
-            report = process_brand(
-                url,
-                output_dir,
-                max_products=int(max_products) if max_products > 0 else None,
-                cms=cms_choice,
-                concurrency=int(concurrency),
-            )
+        report = process_brand(
+            url,
+            output_dir,
+            max_products=int(max_products) if max_products > 0 else None,
+            cms=cms_choice,
+            concurrency=int(concurrency),
+            progress_callback=_update_progress,
+        )
     except Exception as e:
+        progress_bar.empty()
         status_box.empty()
         st.session_state.last_error = f"{type(e).__name__}: {e}"
         st.session_state.last_result = None
         return
 
+    progress_bar.empty()
     status_box.empty()
 
     # Charge le xlsx en mémoire pour persistance (le fichier disque peut bouger)
@@ -609,6 +622,12 @@ if result:
             st.caption(f"☁️ Archivé sur Drive : [voir le fichier]({result['drive_link']})")
         if result["sheet_ok"]:
             st.caption("✏️ Ligne ajoutée dans le Sheet historique d'équipe.")
+
+        # Lien vers le Drive Partagé "Ankorstore Catalogues" (vue globale équipe)
+        st.markdown(
+            "📂 [**Voir tous les catalogues scrapés par l'équipe sur le Drive Partagé**]"
+            "(https://drive.google.com/drive/u/0/folders/0AI4vNJVqxgrHUk9PVA)"
+        )
 
     # Bouton "Nouveau scrape" pour clear l'état
     if st.button("🔄 Nouveau scrape (vider le résultat)", use_container_width=True):
