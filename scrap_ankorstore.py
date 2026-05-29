@@ -39,13 +39,39 @@ import os
 import sys
 
 
+def _is_managed_env() -> bool:
+    """Détecte si on tourne dans un environnement managé (Streamlit Cloud, Docker…)
+    où on ne doit PAS essayer de créer un venv (read-only filesystem / exec impossible).
+    """
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    return (
+        os.environ.get("STREAMLIT_SERVER_HEADLESS", "").lower() == "true"
+        or os.environ.get("HOME") == "/home/adminuser"  # Streamlit Cloud user
+        or "/mount/src/" in script_dir                    # Streamlit Cloud mount
+        or "/app/" in script_dir                          # Render / Heroku
+        or os.environ.get("DYNO") is not None             # Heroku
+    )
+
+
 def _bootstrap_venv() -> None:
-    """Crée un venv local si openpyxl absent, puis re-exec le script dedans."""
+    """Crée un venv local si openpyxl absent, puis re-exec le script dedans.
+
+    Skip complet si on tourne dans un environnement managé (Streamlit Cloud)
+    pour ne pas tuer le process Streamlit avec os.execv. Sur ces plateformes,
+    les dépendances doivent être listées dans requirements.txt.
+    """
     try:
         import openpyxl  # noqa: F401
         return  # Déjà OK
     except ImportError:
         pass
+
+    # Environnement managé : on ne crée jamais de venv, on laisse l'erreur remonter
+    if _is_managed_env():
+        raise ImportError(
+            "openpyxl absent. Sur Streamlit Cloud (ou autre cloud managé), "
+            "ajoute 'openpyxl>=3.1.0' à requirements.txt et redéploie."
+        )
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     venv_dir = os.path.join(script_dir, "venv")
