@@ -35,11 +35,11 @@ L'app vérifie automatiquement si quelqu'un de l'équipe a déjà scrapé cette 
 |---|---|---|
 | **WooCommerce** | ✅ | Store API v1 + fallback sitemap HTML |
 | **PrestaShop** | ✅ | Attribut `data-product` JSON + fallback HTML legacy |
+| **Shopify** | ✅ | `/products.json` paginé + fallback sitemap pour stores restreints |
 | **Wix** | ✅ | `productItems` JSON + JSON-LD + upscale images |
 | **Squarespace** | ✅ | Trick `?format=json` + extraction variants |
 | **SumUp Store** | ✅ | React Server Components flight data |
-| **Sites custom** | ⚠️ | Cascade JSON-LD → Open Graph → microdata (best-effort) |
-| **Shopify** | ➖ Skippé | Intégration native Ankorstore déjà existante |
+| **Sites custom** | ⚠️ | Cascade JSON-LD → Open Graph → microdata (best-effort), fallback automatique si aucun CMS connu détecté |
 | **Etsy / Facebook Shop** | ❌ | Non viable (anti-scraping fort) |
 
 ---
@@ -56,9 +56,11 @@ L'app vérifie automatiquement si quelqu'un de l'équipe a déjà scrapé cette 
                   │  (import paresseux pour limiter la RAM)
                   ▼
 ┌─────────────────────────────────────────────┐
-│  scrap_ankorstore.py  (~3000 lignes)        │
+│  scrap_ankorstore.py  (~3300 lignes)        │
 │  - Détection CMS automatique                │
-│  - 6 scrapers spécialisés                   │
+│  - 7 scrapers spécialisés (Woo, Presta,     │
+│    Shopify, Wix, Squarespace, SumUp,        │
+│    custom best-effort)                      │
 │  - Filtres anti-bruit (alcool, ateliers,    │
 │    cartes cadeaux, consultations…)          │
 │  - Mapping vers template xlsx Ankorstore    │
@@ -93,7 +95,7 @@ L'app vérifie automatiquement si quelqu'un de l'équipe a déjà scrapé cette 
 ```
 ankorstore-scraper/
 ├── README.md                    # Ce fichier
-├── scrap_ankorstore.py          # Le scraper (~3000 lignes, 6 CMS)
+├── scrap_ankorstore.py          # Le scraper (~3300 lignes, 7 CMS dont Shopify)
 ├── ankorstore_template.xlsx     # Template Ankorstore officiel
 ├── probe_*.py                   # Scripts de diagnostic par CMS
 ├── diag_*.py                    # Diagnostics ponctuels
