@@ -340,11 +340,21 @@ def http_get_json(url: str, logger: logging.Logger, retries: int = HTTP_RETRIES)
     # serveurs PrestaShop (cas lagazellemarrakchia.com), si Accept contient
     # application/json, le serveur retourne 200 OK avec un body vide. Bizarre
     # mais reproduit en local. On laisse le serveur décider via Content-Type.
+    # Headers complets pour passer les filtres anti-bot basiques (mimic un vrai
+    # Chrome desktop). Certains sites comme likoolis.fr bloquent les IPs
+    # datacenter sans ces headers Sec-Fetch-*.
     headers = {
         "User-Agent": USER_AGENT,
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-        "Accept-Language": "fr-FR,fr;q=0.9,en;q=0.8",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+        "Accept-Language": "fr-FR,fr;q=0.9,en-US;q=0.8,en;q=0.7",
         "Accept-Encoding": "gzip, identity",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "none",
+        "Sec-Fetch-User": "?1",
+        "Upgrade-Insecure-Requests": "1",
+        "Cache-Control": "max-age=0",
+        "DNT": "1",
     }
     last_err: Exception | None = None
     for attempt in range(retries):
