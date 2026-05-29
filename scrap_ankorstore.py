@@ -1222,9 +1222,17 @@ class PrestaShopScraper:
 
         # Extrait toutes les URLs du body (debug : log la taille et un échantillon)
         all_links = re.findall(r'href=["\']([^"\']+)["\']', body)
+        # Filtre les ressources statiques (CSS, JS, fonts, images) pour ne logger
+        # que les liens "intéressants" (vrais liens de navigation)
+        interesting = [
+            h for h in all_links
+            if not re.search(r"\.(?:css|js|woff2?|ttf|otf|ico|png|jpg|jpeg|webp|svg|gif)(?:\?|$)", h, re.IGNORECASE)
+            and not h.startswith(("javascript:", "mailto:", "tel:", "#"))
+        ]
         self.logger.info(
-            f"Home fetched : body={len(body)} chars, {len(all_links)} hrefs trouvés. "
-            f"Sample : {all_links[:5]}"
+            f"Home fetched : body={len(body)} chars, {len(all_links)} hrefs total, "
+            f"{len(interesting)} liens 'intéressants' (non-static). "
+            f"Sample : {interesting[:15]}"
         )
         for href in all_links:
             # Normalise en URL absolue
