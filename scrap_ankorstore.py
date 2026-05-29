@@ -4850,11 +4850,16 @@ class ShopifyScraper:
         sitemap_urls = self._fetch_sitemap_product_urls()
         n_api = len(api_raw)
         n_sitemap = len(sitemap_urls)
+        self.logger.info(
+            f"Bilan : /products.json={n_api} produits | sitemap={n_sitemap} URLs"
+        )
 
-        # Bascule sur sitemap si le ratio est suspect : sitemap a au moins 2x
-        # plus que l'API ET au moins 5 produits dans le sitemap
+        # Bascule sur sitemap si :
+        # - API retourne peu (≤ 5 produits) ET sitemap a plus, OU
+        # - sitemap a au moins 2x plus que l'API ET ≥ 5 URLs
         should_use_sitemap = (
-            n_sitemap >= 5 and n_sitemap >= max(n_api * 2, n_api + 5)
+            (n_api <= 5 and n_sitemap > n_api)
+            or (n_sitemap >= 5 and n_sitemap >= max(n_api * 2, n_api + 5))
         )
         if should_use_sitemap:
             self.logger.warning(
@@ -5083,8 +5088,15 @@ class ShopifyScraper:
         handle = raw.get("handle") or ""
         body_html = raw.get("body_html") or ""
         product_type = (raw.get("product_type") or "").strip()
-        tags_str = raw.get("tags") or ""
-        tags_list = [t.strip() for t in tags_str.split(",") if t.strip()]
+        # Tags : Shopify renvoie parfois en string CSV ("tag1, tag2") via /products.json,
+        # parfois en liste (["tag1", "tag2"]) via /products/{handle}.json. On gère les 2.
+        tags_raw = raw.get("tags")
+        if isinstance(tags_raw, list):
+            tags_list = [str(t).strip() for t in tags_raw if str(t).strip()]
+        elif isinstance(tags_raw, str):
+            tags_list = [t.strip() for t in tags_raw.split(",") if t.strip()]
+        else:
+            tags_list = []
 
         # Variants Shopify
         variants_raw = raw.get("variants") or []
