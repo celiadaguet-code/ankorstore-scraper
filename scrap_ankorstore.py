@@ -4804,7 +4804,46 @@ class ShopifyScraper:
     def build(
         self, max_products: int | None = None, concurrency: int = 2,
     ) -> list[WooProduct]:
-        """Pagine /products.json en récupérant 250 produits par page."""
+        """Tier 1 : /products.json paginé. Tier 2 : sitemap + /products/{handle}.json
+        produit par produit si /products.json retourne peu de produits.
+
+        Certains stores Shopify restreignent /products.json (limite à quelques
+        produits exposés). Le sitemap reste lui toujours complet.
+        """
+        # Tier 1 : tentative /products.json
+        api_raw = self._fetch_via_products_json(max_products)
+
+        # Sitemap pour vérifier qu'on n'a pas raté beaucoup de produits
+        sitemap_urls = self._fetch_sitemap_product_urls()
+        n_api = len(api_raw)
+        n_sitemap = len(sitemap_urls)
+
+        # Bascule sur sitemap si le ratio est suspect : sitemap a au moins 2x
+        # plus que l'API ET au moins 5 produits dans le sitemap
+        should_use_sitemap = (
+            n_sitemap >= 5 and n_sitemap >= max(n_api * 2, n_api + 5)
+        )
+        if should_use_sitemap:
+            self.logger.warning(
+                f"/products.json a retourné {n_api} produits mais le sitemap en "
+                f"liste {n_sitemap} → bascule sur scraping par produit."
+            )
+            return self._fetch_via_sitemap(sitemap_urls, max_products, concurrency)
+
+        # Sinon : utilise les produits récupérés via API
+        if n_api == 0:
+            self.logger.warning(
+                "Aucun produit récupéré via /products.json ni le sitemap."
+            )
+        elif n_sitemap > 0 and n_sitemap > n_api:
+            self.logger.info(
+                f"/products.json : {n_api} produits | sitemap : {n_sitemap}. "
+                f"On garde l'API (ratio acceptable)."
+            )
+        return self._convert_raw_list(api_raw)
+
+    def _fetch_via_products_json(self, max_products: int | None) -> list[dict]:
+        """Tier 1 : pagine /products.json."""
         per_page = 250
         page = 1
         all_raw: list[dict] = []
@@ -4814,12 +4853,12 @@ class ShopifyScraper:
             try:
                 status, _hdrs, data = http_get_json(url, self.logger)
             except Exception as e:
-                self.logger.error(f"Erreur fetch page {page} : {e}")
+                self.logger.warning(f"Erreur fetch page {page} : {e}")
                 break
             if status != 200 or not isinstance(data, dict):
                 self.logger.warning(
-                    f"page {page} a renvoyé status={status} (data type {type(data).__name__}), "
-                    f"fin de pagination"
+                    f"page {page} a renvoyé status={status} "
+                    f"(data type {type(data).__name__}), fin pagination"
                 )
                 break
             products_page = data.get("products") or []
@@ -4837,13 +4876,112 @@ class ShopifyScraper:
             if max_products and len(all_raw) >= max_products:
                 self.logger.info(f"Limite max_products={max_products} atteinte")
                 break
-
         if max_products:
             all_raw = all_raw[:max_products]
+        return all_raw
 
-        # Convertit chaque produit Shopify en WooProduct (format intermédiaire commun)
+    def _fetch_sitemap_product_urls(self) -> list[str]:
+        """Récupère les URLs produits depuis /sitemap.xml (suit les sub-sitemaps
+        contenant 'products' dans leur nom). Shopify expose tous les produits ici.
+        """
+        urls: list[str] = []
+        sitemap_root = f"{self.base}/sitemap.xml"
+        self.logger.info(f"Probe sitemap : {sitemap_root}")
+        try:
+            status, _hdrs, body = http_get_json(sitemap_root, self.logger)
+        except Exception as e:
+            self.logger.warning(f"Sitemap inaccessible : {e}")
+            return urls
+        if status != 200 or not isinstance(body, str):
+            self.logger.warning(f"Sitemap status={status}")
+            return urls
+
+        # Détecte les sub-sitemaps "products" (Shopify utilise sitemap_products_1.xml)
+        sub_locs = re.findall(r"<loc>([^<]+)</loc>", body)
+        product_subs = [u for u in sub_locs if "product" in u.lower()]
+
+        if not product_subs:
+            # Pas de sub-sitemap → essaye d'extraire les URLs produits directement
+            for u in sub_locs:
+                if "/products/" in u:
+                    urls.append(u)
+            return urls
+
+        # Suit chaque sub-sitemap products
+        for sub_url in product_subs:
+            try:
+                s, _h, sub_body = http_get_json(sub_url, self.logger)
+            except Exception as e:
+                self.logger.debug(f"Sub-sitemap {sub_url} échoué : {e}")
+                continue
+            if s != 200 or not isinstance(sub_body, str):
+                continue
+            sub_urls = re.findall(r"<loc>([^<]+)</loc>", sub_body)
+            # On garde uniquement les URLs qui contiennent /products/ (pas les images)
+            sub_urls = [u for u in sub_urls if "/products/" in u and "/products/" == "/products/"]
+            sub_urls = [u for u in sub_urls if "/products/" in u]
+            urls.extend(sub_urls)
+
+        # Dédoublonne en gardant l'ordre
+        seen = set()
+        unique_urls = []
+        for u in urls:
+            if u not in seen:
+                seen.add(u)
+                unique_urls.append(u)
+        self.logger.info(f"Sitemap : {len(unique_urls)} URLs produits trouvées")
+        return unique_urls
+
+    def _fetch_via_sitemap(
+        self,
+        product_urls: list[str],
+        max_products: int | None,
+        concurrency: int,
+    ) -> list[WooProduct]:
+        """Tier 2 : scrape chaque produit via /products/{handle}.json (endpoint
+        Shopify standard pour 1 produit en JSON, jamais restreint).
+        """
+        if max_products:
+            product_urls = product_urls[:max_products]
+        self.logger.info(
+            f"Tier 2 — fetch JSON pour {len(product_urls)} URLs produits "
+            f"(concurrency={concurrency})"
+        )
+
+        all_raw: list[dict] = []
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+
+        def fetch_one(url: str) -> dict | None:
+            # Shopify expose /products/{handle}.json (wrap {product: ...})
+            json_url = url.rstrip("/") + ".json"
+            try:
+                status, _h, data = http_get_json(json_url, self.logger)
+            except Exception as e:
+                self.logger.debug(f"  {json_url} échoué : {e}")
+                return None
+            if status != 200 or not isinstance(data, dict):
+                return None
+            return data.get("product")
+
+        with ThreadPoolExecutor(max_workers=max(1, concurrency)) as ex:
+            futures = {ex.submit(fetch_one, u): u for u in product_urls}
+            for i, fut in enumerate(as_completed(futures)):
+                result = fut.result()
+                if result:
+                    all_raw.append(result)
+                if (i + 1) % 20 == 0:
+                    self.logger.info(
+                        f"  Tier 2 : {i + 1}/{len(product_urls)} fetched, "
+                        f"{len(all_raw)} valides"
+                    )
+
+        self.logger.info(f"Tier 2 terminé : {len(all_raw)} produits récupérés")
+        return self._convert_raw_list(all_raw)
+
+    def _convert_raw_list(self, raw_list: list[dict]) -> list[WooProduct]:
+        """Convertit une liste de produits Shopify (JSON) en WooProduct."""
         products: list[WooProduct] = []
-        for raw in all_raw:
+        for raw in raw_list:
             try:
                 products.append(self._to_woo_product(raw))
             except Exception as e:
