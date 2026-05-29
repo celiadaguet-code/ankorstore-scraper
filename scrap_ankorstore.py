@@ -119,7 +119,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import openpyxl
 from openpyxl.styles import PatternFill
@@ -1171,13 +1171,15 @@ class PrestaShopScraper:
             # Extrait les URLs produits du HTML
             page_added = 0
             for href in re.findall(r'href=["\']([^"\']+)["\']', body):
-                # Normalise en URL absolue
+                # Normalise en URL absolue (gère relatif simple : "foo.html",
+                # absolu chemin "/foo", protocol-relative "//cdn", URL complète)
                 if href.startswith("//"):
                     href = f"https:{href}"
-                elif href.startswith("/"):
-                    href = f"{self.base}{href}"
-                elif not href.startswith("http"):
-                    continue
+                elif href.startswith(("http://", "https://")):
+                    pass
+                else:
+                    # Relatif (avec ou sans /) → résout via urljoin
+                    href = urljoin(page_url, href)
                 if self.domain not in href:
                     continue
                 # Strip fragments / query (sauf si c'est la pagination)
@@ -1235,13 +1237,15 @@ class PrestaShopScraper:
             f"Sample : {interesting[:15]}"
         )
         for href in all_links:
-            # Normalise en URL absolue
+            # Normalise en URL absolue (gère relatif simple, absolu chemin,
+            # protocol-relative, URL complète)
             if href.startswith("//"):
                 href = f"https:{href}"
-            elif href.startswith("/"):
-                href = f"{self.base}{href}"
-            elif not href.startswith("http"):
-                continue
+            elif href.startswith(("http://", "https://")):
+                pass
+            else:
+                # Relatif (avec ou sans /) → résout via urljoin par rapport à la home
+                href = urljoin(self.brand_url, href)
             if self.domain not in href:
                 continue
             # Strip fragments / query strings pour dédoublonnage
@@ -1276,10 +1280,11 @@ class PrestaShopScraper:
             for href in re.findall(r'href=["\']([^"\']+)["\']', body):
                 if href.startswith("//"):
                     href = f"https:{href}"
-                elif href.startswith("/"):
-                    href = f"{self.base}{href}"
-                elif not href.startswith("http"):
-                    continue
+                elif href.startswith(("http://", "https://")):
+                    pass
+                else:
+                    # Relatif → résout via urljoin par rapport à la catégorie
+                    href = urljoin(cat_url, href)
                 if self.domain not in href:
                     continue
                 href_clean = href.split("#")[0].split("?")[0]
@@ -4821,18 +4826,37 @@ def detect_cms(brand_url: str, logger: logging.Logger) -> str:
     if n_presta_urls >= 8:
         presta_signals.append(f"{n_presta_urls} URLs format /{{N}}-slug (catégories PS)")
 
-    # Signatures WooCommerce / WordPress
+    # Signatures WooCommerce / WordPress (étendues)
     woo_signals = []
+    # Signatures WordPress core
     if "wp-content" in body_lower:
         woo_signals.append("wp-content/")
     if "/wp-json/" in body_lower or "wp-json\\/" in body_lower:
         woo_signals.append("/wp-json/")
-    if re.search(r'\bwoocommerce\b', body, re.IGNORECASE):
-        woo_signals.append("woocommerce keyword")
     if "wp-includes" in body_lower:
         woo_signals.append("wp-includes/")
     if m and "wordpress" in m.group(1).lower():
         woo_signals.append(f"meta generator: {m.group(1)}")
+    # Signatures WooCommerce spécifiques
+    if re.search(r'\bwoocommerce\b', body, re.IGNORECASE):
+        woo_signals.append("woocommerce keyword")
+    # ?add-to-cart=NNN très spécifique à WooCommerce (URL panier rapide)
+    if re.search(r'\?add-to-cart=\d+', body):
+        woo_signals.append("?add-to-cart= URL pattern (WooCommerce)")
+    # URL produit/categorie WooCommerce
+    if re.search(r'/product-category/', body):
+        woo_signals.append("/product-category/ URL")
+    if re.search(r'/categorie/', body) and "wp-" in body_lower:
+        woo_signals.append("/categorie/ + WP fingerprint")
+    # WooCommerce Blocks et nouveaux composants
+    if re.search(r'wc-block-|wp-block-', body):
+        woo_signals.append("wc-block-/wp-block- classes")
+    # Variables JS spécifiques Woo
+    if "wc_add_to_cart_params" in body_lower or "wc_cart_fragments_params" in body_lower:
+        woo_signals.append("wc_*_params JS")
+    # URL d'images WordPress (/wp-content/uploads/ ou /media/YYYY/MM/)
+    if re.search(r'/media/\d{4}/\d{2}/', body):
+        woo_signals.append("/media/YYYY/MM/ (WP custom uploads)")
 
     logger.debug(
         f"Signatures CMS détectées — Presta: {presta_signals} | Woo: {woo_signals}"
