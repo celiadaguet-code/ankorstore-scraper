@@ -4978,6 +4978,23 @@ def detect_cms(brand_url: str, logger: logging.Logger) -> str:
 
     body_lower = body.lower()
 
+    # Signatures Hostinger (Zyro / Horizons) — sites créés via constructeur Hostinger.
+    # Ces sites chargent leurs produits via JavaScript (rendu côté client) donc le
+    # HTML statique ne contient JAMAIS la liste des produits. Non scrapables sans
+    # navigateur headless (Playwright/Selenium). On retourne 'hostinger' pour que
+    # process_brand puisse afficher un message clair à l'AE.
+    hostinger_signals = []
+    if re.search(r'<meta[^>]+name=["\']generator["\'][^>]+content=["\'][^"\']*Hostinger',
+                 body, flags=re.IGNORECASE):
+        hostinger_signals.append("meta generator: Hostinger")
+    if "zyrosite.com" in body_lower or "assets.zyrosite.com" in body_lower:
+        hostinger_signals.append("zyrosite.com CDN")
+    if "hostinger horizons" in body_lower or "hostinger website builder" in body_lower:
+        hostinger_signals.append("Hostinger keyword")
+    if hostinger_signals:
+        logger.info(f"CMS détecté : Hostinger ({', '.join(hostinger_signals)})")
+        return "hostinger"
+
     # Signatures Shopify (très spécifiques — meta tag et CDN dédiés)
     shopify_signals = []
     if "cdn.shopify.com" in body_lower:
@@ -5638,6 +5655,33 @@ def process_brand(
                 cms = "custom"
             else:
                 cms = detected
+
+        # Cas spécial : Hostinger (Zyro/Horizons) — produits chargés en JS,
+        # non scrapable sans navigateur headless. On retourne un échec propre
+        # avec un message clair pour l'AE.
+        if cms == "hostinger":
+            msg = (
+                "Site construit avec Hostinger (Zyro / Horizons). Ces sites "
+                "chargent leurs produits via JavaScript après le rendu initial, "
+                "ce qui n'est pas supporté par cet outil. "
+                "→ Demande le catalogue directement à la marque (Excel/CSV par mail)."
+            )
+            logger.warning(msg)
+            duration = time.time() - t0
+            return BrandReport(
+                brand_url=brand_url,
+                domain=domain_slug,
+                started_at=started.isoformat(timespec="seconds"),
+                duration_s=round(duration, 1),
+                n_products_total=0,
+                n_products_filtered=0,
+                n_variants_total=0,
+                n_warnings=0,
+                output_file="",
+                status="failed",
+                error=msg,
+            )
+
         _progress(0.10, f"CMS : {cms} — récupération du catalogue…")
 
         # 1. Scrape — dispatch sur le bon scraper selon le CMS
