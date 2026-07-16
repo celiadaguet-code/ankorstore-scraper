@@ -4303,18 +4303,56 @@ class AnkorRow:
         return self.data.get(col)
 
 
-def cents_to_decimal(price_str: str | int | None, minor_unit: int = 2) -> float | None:
-    """Convertit '1500' (centimes) en 15.00."""
+def cents_to_decimal(price_str: str | int | float | None, minor_unit: int = 2) -> float | None:
+    """Convertit un prix en euros décimaux (float).
+
+    Formats acceptés en entrée :
+      - '1999' ou 1999 (int) avec minor_unit=2 → 19.99 (centimes vers unités)
+      - '19.99' ou 19.99 (float décimal) → 19.99 (déjà en unités)
+      - '19,99' (virgule française) → 19.99
+      - 20 ou '20' (int/string sans décimale) → 20.0 (traité comme unités, PAS
+        divisé par 100). Évite le bug où un prix rond de 20€ deviendrait 0.20€.
+
+    Règle : si l'entrée est un int/string sans point ni virgule, on considère
+    que c'est **déjà en unités** (euros entiers), pas en centimes. Les vrais
+    prix en centimes (ex: Woo Store API) doivent explicitement passer un
+    string > 100 pour être divisés (ex: '1999' pour 19.99€).
+    """
     if price_str is None or price_str == "":
         return None
-    try:
-        cents = int(str(price_str))
-    except (ValueError, TypeError):
+
+    # float direct → déjà en unités
+    if isinstance(price_str, float):
+        return price_str
+
+    # Normalise : convertit int en string, remplace virgule française par point
+    s = str(price_str).strip().replace(",", ".").replace(" ", "")
+    if not s:
+        return None
+
+    # Si contient un point → prix décimal, déjà en unités (ex: '19.99')
+    if "." in s:
         try:
-            return float(price_str)
-        except (ValueError, TypeError):
+            return float(s)
+        except ValueError:
             return None
-    return cents / (10 ** minor_unit)
+
+    # Pas de point : soit int centimes (Woo Store API) soit int unités (20€)
+    try:
+        n = int(s)
+    except (ValueError, TypeError):
+        return None
+
+    # Heuristique : les prix "en centimes" via API sont typiquement >= 100
+    # (produits à moins de 1€ très rares en marketplace B2B). Les prix "en
+    # unités entières" sont typiquement dans les 3 chiffres (10-999€).
+    # Seuil de bascule à 1000 : au-dessus on suppose centimes, en-dessous
+    # on suppose unités.
+    if minor_unit == 2 and n < 1000:
+        # Ex: 20 → 20€ (pas 0.20€). Corrige le bug historique.
+        return float(n)
+    # Sinon on divise (ex: 1999 → 19.99, 250000 → 2500.00)
+    return n / (10 ** minor_unit)
 
 
 def _clean_feature_value(value: str) -> str:
