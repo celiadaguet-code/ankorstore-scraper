@@ -18,9 +18,9 @@ This tool does the same job in **30 seconds to 3 minutes** per brand, and genera
 ## 🚀 How to use it (for AEs)
 
 1. Go to **https://ankorstore-scraper.streamlit.app**
-2. Enter the shared password: `AnkorScrape2026!`
+2. Enter the shared password: 
 3. Enter your first name (saved for the session)
-4. Paste the URL of a prospect brand (e.g. `https://cosmella.fr`)
+4. Paste the URL of a prospect brand
 5. Click **🚀 Scrape catalog**
 6. Wait 30 seconds to 3 minutes depending on catalog size
 7. **Download the xlsx** → import it into Ankorstore
